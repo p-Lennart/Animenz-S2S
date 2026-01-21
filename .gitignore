@@ -4,3 +4,5 @@ test/*
 xml/*
 .mscbackup/*
 
+/__pycache__
+/test_reserves
