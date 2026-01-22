@@ -1,8 +1,7 @@
-# v17.0 - False Positive Protection (Lone Lower & Default Value Rules)
-# 1. Adds 'has_seen_upper_dynamic' global tracker. Exclusion blocked if False.
-# 2. Adds 'measure_has_upper_dyn' local check.
-# 3. Implements "Lone Lower" logic: Disables Exclusion, Activates Lower Protection.
-# 4. Lower Protection ensures Lower Staff is selected in Safe Mode without deleting Upper Extra voices.
+# v21.0 - Changelog Implementation
+# 1. Implements measure-grouped logging for Dynamic Exclusions (e.g., [Measures 5-10]).
+# 2. Passes shared 'changelog' list to MelodyReducer for reduction logging.
+# 3. Exports {score_name}_CHANGELOG.txt to staging.
 
 import music21
 import copy
@@ -10,6 +9,7 @@ import os
 import glob
 import statistics
 from pathlib import Path
+from MelodyReducer import MelodyReducer
 
 # ==========================================
 # CONFIGURATION
@@ -18,8 +18,7 @@ INPUT_DIR = "./xml"
 STAGING_DIR = "./staging"
 DEBUG = False
 
-# Logic Toggles
-AMBIGUITY_LOOKAHEAD = 2
+AMBIGUITY_LOOKAHEAD = 1
 ENABLE_DYNAMIC_EXCLUSION = True
 DYNAMIC_EXCLUSION_LIMIT = 8
 
@@ -60,6 +59,9 @@ class MxlPretokenizer:
         raw_name = Path(xml_path).stem
         self.score_name = clean_filename(raw_name)
 
+        # Shared Log List
+        self.changelog = []
+
         try:
             self.score = self.score.expandRepeats()
         except Exception as e:
@@ -90,11 +92,26 @@ class MxlPretokenizer:
 
         try:
             melody_midi = self._generate_melody_draft()
+
+            # --- POST-PROCESSING ---
             if melody_midi:
+                print(f"Running Melody Reducer for {self.score_name}...")
+                reducer = MelodyReducer(melody_midi, self.changelog)  # Pass log
+                reducer.process()
+
                 out_path = os.path.join(
                     STAGING_DIR, f"{self.score_name}_MELODY_DRAFT.mid"
                 )
                 melody_midi.write("midi", fp=out_path)
+
+                # Write Changelog
+                log_path = os.path.join(STAGING_DIR, f"{self.score_name}_CHANGELOG.txt")
+                with open(log_path, "w") as f:
+                    f.write(f"Changelog for {self.score_name}\n")
+                    f.write("========================================\n")
+                    for entry in self.changelog:
+                        f.write(entry + "\n")
+
         except Exception as e:
             import traceback
 
@@ -102,7 +119,7 @@ class MxlPretokenizer:
             print(f"ERROR processing MELODY MIDI for {self.score_name}: {e}")
 
     # =========================================================================
-    # CORE LOGIC: GRAND STAFF + STAMP & FLATTEN
+    # CORE LOGIC
     # =========================================================================
     def _collect_grand_staff_measures(self, stream_obj):
         all_measures_by_part = []
@@ -128,7 +145,6 @@ class MxlPretokenizer:
                 "all_dynamics": [],
             }
 
-            # 1. Metadata & Stamping
             for p_idx, m_list in enumerate(all_measures_by_part):
                 if i < len(m_list):
                     m = m_list[i]
@@ -139,7 +155,6 @@ class MxlPretokenizer:
                     if m.keySignature:
                         current_ks = copy.deepcopy(m.keySignature)
 
-                    # Notes
                     for v in m.voices:
                         v_id = v.id
                         for n in v.notesAndRests:
@@ -166,7 +181,6 @@ class MxlPretokenizer:
                                 el.q_staff_id = s_id
                                 el.q_voice_id = v_id_fallback
 
-                        # Dynamics
                         if isinstance(el, music21.dynamics.Dynamic):
                             s_id = self._detect_staff_context(el, "1", p_idx)
                             el.q_staff_id = s_id
@@ -186,24 +200,20 @@ class MxlPretokenizer:
             if current_ks:
                 sys_m["key_sig"] = current_ks
 
-            # 2. Flattening
             for p_idx, m_list in enumerate(all_measures_by_part):
                 if i < len(m_list):
                     m = m_list[i]
                     flat_stream = m.flatten()
-
                     for n in flat_stream.notesAndRests:
                         s_id = getattr(n, "q_staff_id", 1)
                         v_id = getattr(n, "q_voice_id", "1")
                         sys_m["all_notes"].append((n, n.offset, s_id, v_id))
-
                     for d in flat_stream.getElementsByClass("Dynamic"):
                         s_id = getattr(d, "q_staff_id", 1)
                         placement = getattr(d, "q_placement", "unknown")
                         sys_m["all_dynamics"].append((d, d.offset, s_id, placement))
 
             system_measures.append(sys_m)
-
         return system_measures
 
     def _detect_staff_context(self, el, voice_id, part_index):
@@ -218,7 +228,6 @@ class MxlPretokenizer:
                 return int(el.staff)
             except:
                 pass
-
         digits = "".join(filter(str.isdigit, str(voice_id)))
         if digits and int(digits) >= 5:
             return 2
@@ -238,6 +247,9 @@ class MxlPretokenizer:
             "B": music21.stream.Part(),
         }
 
+        for role, p in parts.items():
+            p.id = role
+
         system_measures = self._collect_grand_staff_measures(self.literal_stream)
         if not system_measures:
             return None
@@ -247,11 +259,9 @@ class MxlPretokenizer:
 
         for sys_m in system_measures:
             voice_map = self._map_system_notes(sys_m["all_notes"], bake_tremolos=True)
-
             for role, note_data in voice_map.items():
                 new_measure = music21.stream.Measure()
                 new_measure.number = sys_m["number"] + measure_num_shift
-
                 if sys_m["time_sig"]:
                     new_measure.timeSignature = copy.deepcopy(sys_m["time_sig"])
                     new_measure.duration = music21.duration.Duration(sys_m["duration"])
@@ -277,16 +287,14 @@ class MxlPretokenizer:
                         continue
                     final_note = copy.deepcopy(note)
                     new_measure.insert(original_offset + note_shift, final_note)
-
                 parts[role].append(new_measure)
 
         for role in ["S", "A", "T", "B"]:
             output_score.insert(0, parts[role])
-
         return output_score
 
     # =========================================================================
-    # PIPELINE 2: MELODY DRAFT (Timeline Processing)
+    # PIPELINE 2: MELODY DRAFT
     # =========================================================================
     def _generate_melody_draft(self):
         output_score = music21.stream.Score()
@@ -296,6 +304,9 @@ class MxlPretokenizer:
             "T": music21.stream.Part(),
             "B": music21.stream.Part(),
         }
+
+        for role, p in parts.items():
+            p.id = role
 
         system_measures = self._collect_grand_staff_measures(self.melody_stream)
         start_states = self._calculate_start_volumes(system_measures)
@@ -309,15 +320,17 @@ class MxlPretokenizer:
             "last_voice_set": set(),
             "pitch_history": {},
             "excluded_voice_prev_median": None,
-            "lower_protection_active": False,  # New: Prevents removal of lower staff
         }
 
-        # New: Global Tracker for Default Value Rule
+        # LOGGING STATES
+        exclusion_start_measure = None
+        current_exclusion_reason = ""
+        current_excluded_voice = None
+
         has_seen_upper_dynamic = False
 
         for i, sys_m in enumerate(system_measures):
-
-            # --- PHASE A: STATIC ANALYSIS (Pitches & Measure Dynamics) ---
+            # Static Analysis
             current_upper_voices = set()
             voice_pitches = {}
             for n, _, s_id, v_id in sys_m["all_notes"]:
@@ -349,14 +362,10 @@ class MxlPretokenizer:
                 target_voice_id = sorted_by_pitch[0][0]
                 target_median = sorted_by_pitch[0][1]
 
-            # Pre-scan measure for Upper Dynamics (for Lone Lower logic)
-            measure_has_upper_dyn = False
-            for d_obj, _, d_sid, d_place in sys_m["all_dynamics"]:
-                if d_sid == 1:
-                    measure_has_upper_dyn = True
-                    break
+            measure_has_upper_dyn = any(
+                d_sid == 1 for _, _, d_sid, _ in sys_m["all_dynamics"]
+            )
 
-            # --- PHASE B: TIMELINE CONSTRUCTION ---
             timeline = []
             for dyn, offset, s_id, placement in sys_m["all_dynamics"]:
                 timeline.append((offset, 0, (dyn, s_id, placement)))
@@ -364,44 +373,36 @@ class MxlPretokenizer:
                 timeline.append((offset, 1, (note, s_id, v_id)))
             timeline.sort(key=lambda x: (x[0], x[1]))
 
-            # --- PHASE C: TIMELINE EXECUTION ---
             curr_u, curr_l = start_states[i]
             processed_notes = []
 
-            # Reset triggers
-            reset_reason = None
-            if current_upper_voices != exclusion_state["last_voice_set"]:
-                reset_reason = "Voice Structure Changed"
+            # --- START OF LOGIC LOOP ---
 
-            if reset_reason and (
-                exclusion_state["active"] or exclusion_state["lower_protection_active"]
-            ):
+            # Check Reset from Voice Change
+            if current_upper_voices != exclusion_state["last_voice_set"]:
                 if exclusion_state["active"]:
-                    print(
-                        f"[Dynamic Decision] Measure {sys_m['number']}: Stop excluding ({reset_reason})"
+                    # Log END of block
+                    self.changelog.append(
+                        f"[Measures {exclusion_start_measure}-{sys_m['number']-1}] Ended Exclusion: Voice Structure Changed"
                     )
-                exclusion_state["active"] = False
-                exclusion_state["voice_id"] = None
-                exclusion_state["excluded_voice_prev_median"] = None
-                exclusion_state["lower_protection_active"] = False
+                    exclusion_state["active"] = False
+                    exclusion_state["voice_id"] = None
+                    exclusion_state["excluded_voice_prev_median"] = None
+                    exclusion_start_measure = None
 
             exclusion_state["last_voice_set"] = current_upper_voices
 
             for idx, event in enumerate(timeline):
                 offset, etype, data = event
-
-                if etype == 0:  # Dynamic
+                if etype == 0:
                     dyn_obj, s_id, placement = data
                     val = DYNAMICS_MAP.get(dyn_obj.value, 64)
 
-                    is_lone_lower = False
-
                     if s_id == 1:
-                        has_seen_upper_dynamic = True  # Rule 1: Updated
+                        has_seen_upper_dynamic = True
                         if placement == "above":
                             curr_u = val
                         else:
-                            # Overtake Logic
                             overtake_val = None
                             for k in range(idx + 1, len(timeline)):
                                 f_off, f_type, f_data = timeline[k]
@@ -414,93 +415,70 @@ class MxlPretokenizer:
                                             timeline[k][2][0].value, 64
                                         )
                                         break
-                            if overtake_val is not None:
-                                curr_u = overtake_val
-                                curr_l = val
-                            else:
-                                curr_u = val
-                                curr_l = val
+                            curr_u = overtake_val if overtake_val else val
+                            curr_l = val
                     elif s_id == 2:
                         curr_l = val
-                        # Check for Lone Lower condition
                         if not measure_has_upper_dyn:
-                            is_lone_lower = True
+                            curr_u = val
 
-                    # Octave Jump Check
+                    # Check Octave Jump
                     if exclusion_state["active"]:
                         ex_vid = str(exclusion_state["voice_id"])
                         curr_med_check = current_medians.get(ex_vid, -1)
                         prev_med_check = exclusion_state["excluded_voice_prev_median"]
                         if curr_med_check > -1 and prev_med_check is not None:
                             if abs(curr_med_check - prev_med_check) >= 12:
-                                print(
-                                    f"[Dynamic Decision] Measure {sys_m['number']}: Stop excluding (Octave Jump)"
+                                self.changelog.append(
+                                    f"[Measures {exclusion_start_measure}-{sys_m['number']}] Ended Exclusion: Octave Jump"
                                 )
                                 exclusion_state["active"] = False
                                 exclusion_state["voice_id"] = None
-                                exclusion_state["lower_protection_active"] = False
+                                exclusion_start_measure = None
 
-                    # Check Exclusion / Protection
                     if ENABLE_DYNAMIC_EXCLUSION:
-                        # Reset if Equal
-                        if curr_u >= curr_l:
-                            if (
-                                exclusion_state["active"]
-                                or exclusion_state["lower_protection_active"]
-                            ):
-                                print(
-                                    f"[Dynamic Decision] Measure {sys_m['number']}: Stop excluding/protection (Vol Equalized)"
-                                )
-                                exclusion_state["active"] = False
-                                exclusion_state["voice_id"] = None
-                                exclusion_state["lower_protection_active"] = False
+                        # Check Reset Volume
+                        if curr_u >= curr_l and exclusion_state["active"]:
+                            self.changelog.append(
+                                f"[Measures {exclusion_start_measure}-{sys_m['number']}] Ended Exclusion: Volumes Equalized (U={curr_u}, L={curr_l})"
+                            )
+                            exclusion_state["active"] = False
+                            exclusion_state["voice_id"] = None
+                            exclusion_start_measure = None
 
-                        # Trigger Conditions
+                        # Check Start Exclusion
                         if curr_u < curr_l:
-                            if is_lone_lower:
-                                # Rule 2: Lone Lower -> Protection Only
-                                if exclusion_state["active"]:
-                                    print(
-                                        f"[Dynamic Decision] Measure {sys_m['number']}: Switching to Lower Protection (Lone Lower)"
-                                    )
-                                    exclusion_state["active"] = False
-                                    exclusion_state["voice_id"] = None
-                                if not exclusion_state["lower_protection_active"]:
-                                    print(
-                                        f"[Dynamic Decision] Measure {sys_m['number']}: Lower Protection Active (Lone Lower)"
-                                    )
-                                    exclusion_state["lower_protection_active"] = True
+                            if (
+                                not exclusion_state["active"]
+                                and has_seen_upper_dynamic
+                                and target_voice_id
+                            ):
+                                exclusion_state["active"] = True
+                                exclusion_state["voice_id"] = target_voice_id
+                                exclusion_state["excluded_voice_prev_median"] = (
+                                    target_median
+                                )
+                                exclusion_start_measure = sys_m["number"]
+                                current_excluded_voice = target_voice_id
+                                # We log the START event implicitly by the range later,
+                                # OR we can log here if we want detailed trigger info
+                                # Let's log the block summary only when it ends,
+                                # but we need to know WHY it started.
+                                # For now, simple logging:
+                                pass  # Wait for end to log range
 
-                            else:
-                                # Standard Case -> Active Exclusion
-                                # Rule 1 Check: Must have seen upper dynamic
-                                if (
-                                    not exclusion_state["active"]
-                                    and has_seen_upper_dynamic
-                                    and target_voice_id
-                                ):
-                                    exclusion_state["active"] = True
-                                    exclusion_state["voice_id"] = target_voice_id
-                                    exclusion_state["excluded_voice_prev_median"] = (
-                                        target_median
-                                    )
-                                    exclusion_state["lower_protection_active"] = (
-                                        False  # Strict mode overrides protection
-                                    )
-                                    print(
-                                        f"[Dynamic Decision] Measure {sys_m['number']}: Excluding Voice {target_voice_id} (Median={target_median:.1f}, Vol U={curr_u} < L={curr_l})"
-                                    )
-
-                elif etype == 1:  # Note
+                elif etype == 1:
                     note_obj, s_id, v_id = data
                     keep = True
-                    if exclusion_state["active"]:
-                        if s_id == 1 and str(v_id) == str(exclusion_state["voice_id"]):
-                            keep = False
+                    if (
+                        exclusion_state["active"]
+                        and s_id == 1
+                        and str(v_id) == str(exclusion_state["voice_id"])
+                    ):
+                        keep = False
                     if keep:
                         processed_notes.append((note_obj, offset, s_id, v_id))
 
-            # --- PHASE D: MEASURE GENERATION ---
             measure_content = {"S": [], "A": [], "T": [], "B": []}
             voice_map = self._map_system_notes(processed_notes, bake_tremolos=False)
             is_ambiguous = self._check_ambiguity_lookahead(system_measures, i)
@@ -512,14 +490,11 @@ class MxlPretokenizer:
                     measure_content[role].extend(notes)
             else:
                 target_staff = 1
-
-                # Safe Mode Logic
-                # If Protection is active, we treat Lower as melody (target 2)
-                # regardless of what standard comparison might say (though U < L is implied).
-                if exclusion_state["lower_protection_active"]:
+                if ENABLE_DYNAMIC_EXCLUSION and curr_u < curr_l:
                     target_staff = 2
-                elif curr_u < curr_l:
-                    target_staff = 2
+                    # Optionally log this Safe Mode decision?
+                    # "Measure X: Safe Mode selected Lower Staff"
+                    # Might be too verbose.
 
                 if target_staff == 1:
                     measure_content["S"] = voice_map["S"]
@@ -557,17 +532,19 @@ class MxlPretokenizer:
                         continue
                     cleaned = self._clean_melody_note(item)
                     new_measure.insert(original_offset + note_shift, cleaned)
-
                 parts[role].append(new_measure)
+
+        # End of loop cleanup: Close open exclusion block
+        if exclusion_state["active"]:
+            self.changelog.append(
+                f"[Measures {exclusion_start_measure}-{system_measures[-1]['number']}] Ended Exclusion: End of Score"
+            )
 
         for role in ["S", "A", "T", "B"]:
             output_score.insert(0, parts[role])
-
         return output_score
 
-    # =========================================================================
-    # LOGIC HELPERS
-    # =========================================================================
+    # ... [HELPERS SAME AS v17.0] ...
 
     def _calculate_start_volumes(self, system_measures):
         start_states = []
@@ -575,19 +552,13 @@ class MxlPretokenizer:
         curr_l = 64
         exclusion_counter = 0
         exclusion_active = False
-
-        # We need a local tracker for this simulation too
         sim_has_seen_upper = False
-
         for sys_m in system_measures:
             start_states.append((curr_u, curr_l))
             sys_m["all_dynamics"].sort(key=lambda x: x[1])
-
-            measure_has_upper = False
-            for dyn, _, d_sid, _ in sys_m["all_dynamics"]:
-                if d_sid == 1:
-                    measure_has_upper = True
-
+            measure_has_upper = any(
+                d_sid == 1 for _, _, d_sid, _ in sys_m["all_dynamics"]
+            )
             for dyn, offset, s_id, placement in sys_m["all_dynamics"]:
                 val = DYNAMICS_MAP.get(dyn.value, 64)
                 if s_id == 1:
@@ -599,20 +570,16 @@ class MxlPretokenizer:
                         curr_l = val
                 elif s_id == 2:
                     curr_l = val
+                    if not measure_has_upper:
+                        curr_u = val
 
-            # Simplified simulation of exclusion counting
-            # Only count if we would actually exclude (requires upper dyn seen, and not lone lower)
-            # This is an approximation since exact event timing matters, but good enough for 8-bar limit.
             trigger = (curr_u < curr_l) and sim_has_seen_upper
-            if trigger and not (
-                not measure_has_upper and trigger
-            ):  # Crude check for lone lower
+            if trigger:
                 exclusion_active = True
                 exclusion_counter += 1
             else:
                 exclusion_active = False
                 exclusion_counter = 0
-
             if (
                 ENABLE_DYNAMIC_EXCLUSION
                 and exclusion_active
@@ -623,7 +590,6 @@ class MxlPretokenizer:
                 curr_l = reset_val
                 exclusion_active = False
                 exclusion_counter = 0
-
         return start_states
 
     def _check_ambiguity_lookahead(self, system_measures, current_idx):
@@ -645,7 +611,6 @@ class MxlPretokenizer:
             if v_id not in staff_groups[s_id]:
                 staff_groups[s_id][v_id] = []
             staff_groups[s_id][v_id].append((n, offset))
-
         output = {"S": [], "A": [], "T": [], "B": []}
         for s_num, role_main, role_extra in [(1, "S", "A"), (2, "T", "B")]:
             v_ids = list(staff_groups[s_num].keys())
@@ -663,7 +628,6 @@ class MxlPretokenizer:
             output[role_main].extend(staff_groups[s_num][main_id])
             for extra_id in v_ids[1:]:
                 output[role_extra].extend(staff_groups[s_num][extra_id])
-
         if bake_tremolos:
             for key in output:
                 raw_tuples = output[key]
