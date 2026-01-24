@@ -1,7 +1,8 @@
-# v21.0 - Changelog Implementation
-# 1. Implements measure-grouped logging for Dynamic Exclusions (e.g., [Measures 5-10]).
-# 2. Passes shared 'changelog' list to MelodyReducer for reduction logging.
-# 3. Exports {score_name}_CHANGELOG.txt to staging.
+# v22.0 - Beautified Changelog & Structured Logging
+# 1. Stores logs as data dicts {start, end, part, text}.
+# 2. Captures Dynamic Exclusion Trigger values (U=x < L=y) at start of block.
+# 3. Sorts all events by Measure number.
+# 4. Formats output with columns [Mm. X-Y] [Part] Description.
 
 import music21
 import copy
@@ -9,16 +10,16 @@ import os
 import glob
 import statistics
 from pathlib import Path
-from MelodyReducer import MelodyReducer
+from pretoken_melody_reduction import MelodyReducer
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
-INPUT_DIR = "./xml"
+INPUT_DIR = "./test"
 STAGING_DIR = "./staging"
-DEBUG = False
+DEBUG = True
 
-AMBIGUITY_LOOKAHEAD = 1
+AMBIGUITY_LOOKAHEAD = 2
 ENABLE_DYNAMIC_EXCLUSION = True
 DYNAMIC_EXCLUSION_LIMIT = 8
 
@@ -59,8 +60,9 @@ class MxlPretokenizer:
         raw_name = Path(xml_path).stem
         self.score_name = clean_filename(raw_name)
 
-        # Shared Log List
-        self.changelog = []
+        # Shared Structured Log
+        # Items: {'start_m': int, 'end_m': int, 'part': str, 'text': str}
+        self.log_data = []
 
         try:
             self.score = self.score.expandRepeats()
@@ -93,10 +95,9 @@ class MxlPretokenizer:
         try:
             melody_midi = self._generate_melody_draft()
 
-            # --- POST-PROCESSING ---
             if melody_midi:
                 print(f"Running Melody Reducer for {self.score_name}...")
-                reducer = MelodyReducer(melody_midi, self.changelog)  # Pass log
+                reducer = MelodyReducer(melody_midi, self.log_data)  # Pass shared list
                 reducer.process()
 
                 out_path = os.path.join(
@@ -104,13 +105,7 @@ class MxlPretokenizer:
                 )
                 melody_midi.write("midi", fp=out_path)
 
-                # Write Changelog
-                log_path = os.path.join(STAGING_DIR, f"{self.score_name}_CHANGELOG.txt")
-                with open(log_path, "w") as f:
-                    f.write(f"Changelog for {self.score_name}\n")
-                    f.write("========================================\n")
-                    for entry in self.changelog:
-                        f.write(entry + "\n")
+                self._write_changelog()
 
         except Exception as e:
             import traceback
@@ -118,22 +113,49 @@ class MxlPretokenizer:
             traceback.print_exc()
             print(f"ERROR processing MELODY MIDI for {self.score_name}: {e}")
 
+    def _write_changelog(self):
+        log_path = os.path.join(STAGING_DIR, f"{self.score_name}_CHANGELOG.txt")
+
+        # Sort by start measure
+        self.log_data.sort(key=lambda x: x["start_m"])
+
+        with open(log_path, "w") as f:
+            f.write(f"Melody Extraction Changelog: {self.score_name}\n")
+            f.write("=" * 80 + "\n\n")
+
+            for entry in self.log_data:
+                s = entry["start_m"]
+                e = entry["end_m"]
+
+                # Format Measure Column: "[Mm. 105-112]" or "[M.  81]"
+                # Fixed width ~13 chars
+                if s != e and e > 0:
+                    m_str = f"[Mm. {s}-{e}]"
+                else:
+                    m_str = f"[M.  {s}]"
+
+                # Format Part Column: "[S]"
+                # Fixed width ~5 chars
+                p_str = f"[{entry['part']}]"
+
+                # Full line
+                line = f"{m_str:<15} {p_str:<5} {entry['text']}"
+                f.write(line + "\n")
+
     # =========================================================================
     # CORE LOGIC
     # =========================================================================
+    # ... [Collect Grand Staff same as v20.0] ...
     def _collect_grand_staff_measures(self, stream_obj):
         all_measures_by_part = []
         for p in stream_obj.parts:
             all_measures_by_part.append(list(p.getElementsByClass("Measure")))
-
         if not all_measures_by_part:
             return []
         max_len = max(len(m_list) for m_list in all_measures_by_part)
-
         system_measures = []
         current_ts = None
         current_ks = None
-
         for i in range(max_len):
             sys_m = {
                 "index": i,
@@ -144,7 +166,6 @@ class MxlPretokenizer:
                 "all_notes": [],
                 "all_dynamics": [],
             }
-
             for p_idx, m_list in enumerate(all_measures_by_part):
                 if i < len(m_list):
                     m = m_list[i]
@@ -154,7 +175,6 @@ class MxlPretokenizer:
                         current_ts = copy.deepcopy(m.timeSignature)
                     if m.keySignature:
                         current_ks = copy.deepcopy(m.keySignature)
-
                     for v in m.voices:
                         v_id = v.id
                         for n in v.notesAndRests:
@@ -180,7 +200,6 @@ class MxlPretokenizer:
                                 )
                                 el.q_staff_id = s_id
                                 el.q_voice_id = v_id_fallback
-
                         if isinstance(el, music21.dynamics.Dynamic):
                             s_id = self._detect_staff_context(el, "1", p_idx)
                             el.q_staff_id = s_id
@@ -193,13 +212,11 @@ class MxlPretokenizer:
                                     pass
                             if el.q_placement == "unknown" and hasattr(el, "placement"):
                                 el.q_placement = el.placement
-
             if current_ts:
                 sys_m["time_sig"] = current_ts
                 sys_m["duration"] = current_ts.barDuration.quarterLength
             if current_ks:
                 sys_m["key_sig"] = current_ks
-
             for p_idx, m_list in enumerate(all_measures_by_part):
                 if i < len(m_list):
                     m = m_list[i]
@@ -212,7 +229,6 @@ class MxlPretokenizer:
                         s_id = getattr(d, "q_staff_id", 1)
                         placement = getattr(d, "q_placement", "unknown")
                         sys_m["all_dynamics"].append((d, d.offset, s_id, placement))
-
             system_measures.append(sys_m)
         return system_measures
 
@@ -235,9 +251,7 @@ class MxlPretokenizer:
             return 2
         return 1
 
-    # =========================================================================
-    # PIPELINE 1: LITERAL MIDI
-    # =========================================================================
+    # ... [LITERAL MIDI same as v20.0] ...
     def _generate_literal_midi(self):
         output_score = music21.stream.Score()
         parts = {
@@ -246,17 +260,13 @@ class MxlPretokenizer:
             "T": music21.stream.Part(),
             "B": music21.stream.Part(),
         }
-
         for role, p in parts.items():
             p.id = role
-
         system_measures = self._collect_grand_staff_measures(self.literal_stream)
         if not system_measures:
             return None
-
         padding_duration = self._calculate_padding(self.literal_stream)
         measure_num_shift = 1 if padding_duration > 0 else 0
-
         for sys_m in system_measures:
             voice_map = self._map_system_notes(sys_m["all_notes"], bake_tremolos=True)
             for role, note_data in voice_map.items():
@@ -270,7 +280,6 @@ class MxlPretokenizer:
                     if ks.sharps is None:
                         ks.sharps = 0
                     new_measure.keySignature = ks
-
                 note_shift = 0.0
                 if sys_m["index"] == 0 and padding_duration > 0:
                     pad_rest = music21.note.Rest()
@@ -281,14 +290,12 @@ class MxlPretokenizer:
                         new_measure.duration = music21.duration.Duration(
                             new_measure.timeSignature.barDuration.quarterLength
                         )
-
                 for note, original_offset in note_data:
                     if note.duration.isGrace:
                         continue
                     final_note = copy.deepcopy(note)
                     new_measure.insert(original_offset + note_shift, final_note)
                 parts[role].append(new_measure)
-
         for role in ["S", "A", "T", "B"]:
             output_score.insert(0, parts[role])
         return output_score
@@ -324,8 +331,7 @@ class MxlPretokenizer:
 
         # LOGGING STATES
         exclusion_start_measure = None
-        current_exclusion_reason = ""
-        current_excluded_voice = None
+        exclusion_start_vals = (0, 0)
 
         has_seen_upper_dynamic = False
 
@@ -381,10 +387,17 @@ class MxlPretokenizer:
             # Check Reset from Voice Change
             if current_upper_voices != exclusion_state["last_voice_set"]:
                 if exclusion_state["active"]:
-                    # Log END of block
-                    self.changelog.append(
-                        f"[Measures {exclusion_start_measure}-{sys_m['number']-1}] Ended Exclusion: Voice Structure Changed"
+                    su, sl = exclusion_start_vals
+                    msg = f"Dynamic Exclusion (U={su} < L={sl}) -> (Voice structure change)"
+                    self.log_data.append(
+                        {
+                            "start_m": exclusion_start_measure,
+                            "end_m": sys_m["number"] - 1,
+                            "part": "S",
+                            "text": msg,
+                        }
                     )
+
                     exclusion_state["active"] = False
                     exclusion_state["voice_id"] = None
                     exclusion_state["excluded_voice_prev_median"] = None
@@ -429,8 +442,15 @@ class MxlPretokenizer:
                         prev_med_check = exclusion_state["excluded_voice_prev_median"]
                         if curr_med_check > -1 and prev_med_check is not None:
                             if abs(curr_med_check - prev_med_check) >= 12:
-                                self.changelog.append(
-                                    f"[Measures {exclusion_start_measure}-{sys_m['number']}] Ended Exclusion: Octave Jump"
+                                su, sl = exclusion_start_vals
+                                msg = f"Dynamic Exclusion (U={su} < L={sl}) -> (Octave Jump)"
+                                self.log_data.append(
+                                    {
+                                        "start_m": exclusion_start_measure,
+                                        "end_m": sys_m["number"],
+                                        "part": "S",
+                                        "text": msg,
+                                    }
                                 )
                                 exclusion_state["active"] = False
                                 exclusion_state["voice_id"] = None
@@ -439,8 +459,15 @@ class MxlPretokenizer:
                     if ENABLE_DYNAMIC_EXCLUSION:
                         # Check Reset Volume
                         if curr_u >= curr_l and exclusion_state["active"]:
-                            self.changelog.append(
-                                f"[Measures {exclusion_start_measure}-{sys_m['number']}] Ended Exclusion: Volumes Equalized (U={curr_u}, L={curr_l})"
+                            su, sl = exclusion_start_vals
+                            msg = f"Dynamic Exclusion (U={su} < L={sl}) -> (Volumes Equalized)"
+                            self.log_data.append(
+                                {
+                                    "start_m": exclusion_start_measure,
+                                    "end_m": sys_m["number"],
+                                    "part": "S",
+                                    "text": msg,
+                                }
                             )
                             exclusion_state["active"] = False
                             exclusion_state["voice_id"] = None
@@ -459,13 +486,7 @@ class MxlPretokenizer:
                                     target_median
                                 )
                                 exclusion_start_measure = sys_m["number"]
-                                current_excluded_voice = target_voice_id
-                                # We log the START event implicitly by the range later,
-                                # OR we can log here if we want detailed trigger info
-                                # Let's log the block summary only when it ends,
-                                # but we need to know WHY it started.
-                                # For now, simple logging:
-                                pass  # Wait for end to log range
+                                exclusion_start_vals = (curr_u, curr_l)
 
                 elif etype == 1:
                     note_obj, s_id, v_id = data
@@ -492,9 +513,6 @@ class MxlPretokenizer:
                 target_staff = 1
                 if ENABLE_DYNAMIC_EXCLUSION and curr_u < curr_l:
                     target_staff = 2
-                    # Optionally log this Safe Mode decision?
-                    # "Measure X: Safe Mode selected Lower Staff"
-                    # Might be too verbose.
 
                 if target_staff == 1:
                     measure_content["S"] = voice_map["S"]
@@ -534,17 +552,24 @@ class MxlPretokenizer:
                     new_measure.insert(original_offset + note_shift, cleaned)
                 parts[role].append(new_measure)
 
-        # End of loop cleanup: Close open exclusion block
+        # End of loop cleanup
         if exclusion_state["active"]:
-            self.changelog.append(
-                f"[Measures {exclusion_start_measure}-{system_measures[-1]['number']}] Ended Exclusion: End of Score"
+            su, sl = exclusion_start_vals
+            msg = f"Dynamic Exclusion (U={su} < L={sl}) -> (End of Score)"
+            self.log_data.append(
+                {
+                    "start_m": exclusion_start_measure,
+                    "end_m": system_measures[-1]["number"],
+                    "part": "S",
+                    "text": msg,
+                }
             )
 
         for role in ["S", "A", "T", "B"]:
             output_score.insert(0, parts[role])
         return output_score
 
-    # ... [HELPERS SAME AS v17.0] ...
+    # ... [HELPERS] ...
 
     def _calculate_start_volumes(self, system_measures):
         start_states = []
@@ -572,7 +597,6 @@ class MxlPretokenizer:
                     curr_l = val
                     if not measure_has_upper:
                         curr_u = val
-
             trigger = (curr_u < curr_l) and sim_has_seen_upper
             if trigger:
                 exclusion_active = True
