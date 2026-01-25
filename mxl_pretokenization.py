@@ -1,10 +1,6 @@
-# v26.0 - Mid-Measure Handoff Fix (Dominance Tracking)
-# 1. Logic Fix: Prevents Safe Mode from discarding Upper Staff if it was the melody
-#    at the start of the measure but became accompaniment at the end.
-# 2. Implements 'upper_ever_dominant' flag tracking through the timeline.
-# v25.0 - Config Updates
-# 1. Adds RUN_AGGRESSIVE_MODE and related constants.
-# 2. Defines LOWER_TENUTO_THRESHOLD.
+# v28.0 - Granular Run Config
+# 1. Updates Run Config constants to match v28 Reducer logic.
+# 2. Passes individual toggle flags to Reducer instance.
 
 import music21
 import copy
@@ -28,8 +24,16 @@ DYNAMIC_EXCLUSION_LIMIT = 8
 LOWER_TENUTO_THRESHOLD = 2
 
 # Run Simplification Rules
-RUN_AGGRESSIVE_MODE = True
-RUN_LEAP_THRESHOLD = 7
+RUN_MIN_NOTES = 7  # Notes required to count as a run
+RUN_MIN_NOTES_PER_BEAT = 3.0  # Density gating threshold
+RUN_DURATION_TOLERANCE_RATIO = 2.5
+
+# Selection Toggles
+RUN_INCLUDE_START_NOTE = True
+RUN_INCLUDE_END_NOTE = True
+RUN_INCLUDE_ARTICULATED = True
+RUN_BOUNDARY_SKIP = 99  # 0=Keep all boundaries, 1=Skip 1, etc.
+RUN_LEAP_THRESHOLD = 7  # 7 semitones (Perfect 5th)
 
 DYNAMICS_MAP = {
     "pppp": 10,
@@ -103,8 +107,15 @@ class MxlPretokenizer:
                 print(f"Running Melody Reducer for {self.score_name}...")
                 reducer = MelodyReducer(melody_midi, self.log_data)
 
-                # Apply Config
-                reducer.RUN_AGGRESSIVE_MODE = RUN_AGGRESSIVE_MODE
+                # Apply Granular Config
+                reducer.RUN_MIN_NOTES = RUN_MIN_NOTES
+                reducer.RUN_MIN_NOTES_PER_BEAT = RUN_MIN_NOTES_PER_BEAT
+                reducer.RUN_DURATION_TOLERANCE_RATIO = RUN_DURATION_TOLERANCE_RATIO
+
+                reducer.RUN_INCLUDE_START_NOTE = RUN_INCLUDE_START_NOTE
+                reducer.RUN_INCLUDE_END_NOTE = RUN_INCLUDE_END_NOTE
+                reducer.RUN_INCLUDE_ARTICULATED = RUN_INCLUDE_ARTICULATED
+                reducer.RUN_BOUNDARY_SKIP = RUN_BOUNDARY_SKIP
                 reducer.RUN_LEAP_THRESHOLD = RUN_LEAP_THRESHOLD
 
                 reducer.process()
@@ -137,7 +148,6 @@ class MxlPretokenizer:
                 line = f"{p_str:<5} {m_str:<15} {entry['text']}"
                 f.write(line + "\n")
 
-    # ... [CORE LOGIC IDENTICAL] ...
     def _collect_grand_staff_measures(self, stream_obj):
         all_measures_by_part = []
         for p in stream_obj.parts:
@@ -322,7 +332,6 @@ class MxlPretokenizer:
         has_seen_upper_dynamic = False
 
         for i, sys_m in enumerate(system_measures):
-            # ... [Analysis identical] ...
             current_upper_voices = set()
             voice_pitches = {}
             for n, _, s_id, v_id in sys_m["all_notes"]:
@@ -362,9 +371,7 @@ class MxlPretokenizer:
                 timeline.append((offset, 1, (note, s_id, v_id)))
             timeline.sort(key=lambda x: (x[0], x[1]))
 
-            # --- FIXED LOGIC START ---
             curr_u, curr_l = start_states[i]
-            # Track if Upper Staff was EVER >= Lower (Dominant) during this measure
             upper_ever_dominant = curr_u >= curr_l
 
             processed_notes = []
@@ -415,7 +422,6 @@ class MxlPretokenizer:
                         if not measure_has_upper_dyn:
                             curr_u = val
 
-                    # Update Dominance Tracker
                     if curr_u >= curr_l:
                         upper_ever_dominant = True
 
@@ -488,12 +494,9 @@ class MxlPretokenizer:
                     measure_content[role].extend(notes)
             else:
                 target_staff = 1
-
-                # FIX: Only Safe-Swap to Lower if Upper was NEVER dominant
                 should_swap = curr_u < curr_l
                 if upper_ever_dominant:
                     should_swap = False
-
                 if ENABLE_DYNAMIC_EXCLUSION and should_swap:
                     target_staff = 2
 

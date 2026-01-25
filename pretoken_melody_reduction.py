@@ -13,11 +13,17 @@ class MelodyReducer:
         self.OSTINATO_PROTECTION_MEASURES = 8
 
         # Run Config
-        self.RUN_MIN_BEATS = 2.0
+        self.RUN_MIN_NOTES = 8
         self.RUN_MIN_NOTES_PER_BEAT = 3.0
+        self.RUN_DURATION_TOLERANCE_RATIO = 2.5
+
+        # Selection Toggles
+        self.RUN_INCLUDE_START_NOTE = True
+        self.RUN_INCLUDE_END_NOTE = True
+        self.RUN_INCLUDE_ARTICULATED = True
         self.RUN_BOUNDARY_SKIP = 0
         self.RUN_LEAP_THRESHOLD = 7
-        self.RUN_AGGRESSIVE_MODE = False  # Toggle this via external config if needed
+        self.RUN_AGGRESSIVE_MODE = False
 
         self.TOLERANCE = 0.05
         self.DEBUG = False
@@ -60,7 +66,7 @@ class MelodyReducer:
             }
         )
 
-    # ... [OSTINATO LOGIC SAME AS v23/24] ...
+    # ... [OSTINATO LOGIC SAME AS v25] ...
     def _remove_texture_patterns(self, part, part_id):
         flat_stream = part.flatten()
         elements = list(flat_stream.notesAndRests)
@@ -189,58 +195,100 @@ class MelodyReducer:
                 target_measure.insert(local_offset, new_note)
 
     # =========================================================================
-    # RULE 2: RUN SIMPLIFICATION (UPDATED v25)
+    # RULE 2: RUN SIMPLIFICATION (UPDATED v30)
     # =========================================================================
     def _simplify_runs(self, part):
-        flat_notes = list(part.flatten().notes)
+        # 1. Fetch WITHOUT Sorting (Restores v24 natural order)
         elements = list(part.flatten().notesAndRests)
         if not elements:
             return
 
         current_run = []
+        duration_gate_threshold = 1.0 / self.RUN_MIN_NOTES_PER_BEAT
+
+        # Track Time to detect "Rewinds" (Ghost Notes)
+        last_processed_offset = -1.0
+
         for el in elements:
+            # 2. CHRONOLOGICAL SAFETY CHECK (New)
+            # If an element claims to be earlier than where we are, it's a ghost/bug.
+            if el.offset < last_processed_offset - self.TOLERANCE:
+                if self.DEBUG:
+                    print(
+                        f"DEBUG [Skip Rewind]: Offset {el.offset} < {last_processed_offset}"
+                    )
+                continue
+
+            # Update high water mark
+            if el.offset > last_processed_offset:
+                last_processed_offset = el.offset
+
+            # 3. Filter Grace Notes
+            if el.duration.isGrace or el.duration.quarterLength == 0.0:
+                continue
+
             if el.isRest:
                 if current_run:
                     self._evaluate_and_process_run(current_run, part)
                     current_run = []
                 continue
+
             n = el
             if hasattr(n, "tie") and n.tie is not None:
                 if current_run:
                     self._evaluate_and_process_run(current_run, part)
                     current_run = []
                 continue
+
+            # 4. Strict Duration Gating
+            if n.duration.quarterLength > (duration_gate_threshold + 0.01):
+                if current_run:
+                    self._evaluate_and_process_run(current_run, part)
+                    current_run = []
+                continue
+
             if not current_run:
                 current_run.append(n)
             else:
                 prev = current_run[-1]
+
+                # 5. Filter Duplicates (Same Offset)
+                if abs(n.offset - prev.offset) < self.TOLERANCE:
+                    continue
+
                 prev_end = prev.offset + prev.duration.quarterLength
                 is_continuous = abs(prev_end - n.offset) < self.TOLERANCE
 
-                # UPDATED: Removed is_equal_dur check
+                # 6. Ratio Check
+                d1 = prev.duration.quarterLength
+                d2 = n.duration.quarterLength
+                if d1 > 0 and d2 > 0:
+                    ratio = max(d1, d2) / min(d1, d2)
+                    if ratio > self.RUN_DURATION_TOLERANCE_RATIO:
+                        is_continuous = False
+
                 if is_continuous:
                     current_run.append(n)
                 else:
                     self._evaluate_and_process_run(current_run, part)
                     current_run = [n]
+
         self._evaluate_and_process_run(current_run, part)
 
     def _evaluate_and_process_run(self, run, part):
         if not run:
             return
+
+        if len(run) < self.RUN_MIN_NOTES:
+            return
+
         start_offset = run[0].offset
-        end_offset = run[-1].offset + run[-1].duration.quarterLength
         ts = self._get_context_at_offset(part, start_offset, "TimeSignature")
         if not ts:
             beat_dur = 1.0
         else:
             beat_dur = ts.beatDuration.quarterLength
-        total_len_beats = (end_offset - start_offset) / beat_dur
-        if total_len_beats < self.RUN_MIN_BEATS:
-            return
-        avg_density = len(run) / total_len_beats
-        if avg_density < self.RUN_MIN_NOTES_PER_BEAT:
-            return
+
         self._rewrite_run(run, ts, beat_dur, part)
 
     def _get_context_at_offset(self, part, offset, class_name):
@@ -292,27 +340,31 @@ class MelodyReducer:
         start_global = run[0].offset
         end_global = run[-1].offset + run[-1].duration.quarterLength
         beats = (end_global - start_global) / beat_dur
+
+        pitch_list = []
+        for n in run:
+            if n.isNote:
+                pitch_list.append(n.pitch.nameWithOctave)
+            elif n.isChord:
+                pitch_list.append(n.pitches[-1].nameWithOctave)
+        p_str = ",".join(pitch_list[:5]) + ("..." if len(pitch_list) > 5 else "")
+
         self._log_structured(
             start_global,
             end_global,
             part.id,
-            f"Simplify run (Beats={beats:.1f}, Density={len(run)/beats:.1f})",
+            f"Simplify run (Notes={len(run)}, Beats={beats:.1f}) [{p_str}]",
         )
 
         keepers = []
         raw_keepers = []
-
-        # UPDATED: Aggressive Mode Logic
         if not self.RUN_AGGRESSIVE_MODE:
             raw_keepers.append(run[0])
             raw_keepers.append(run[-1])
-
         boundary_hits = 0
 
         for i, n in enumerate(run):
             should_keep = False
-
-            # Articulation Check (Always Active)
             if hasattr(n, "articulations") and n.articulations:
                 for art in n.articulations:
                     if isinstance(
@@ -325,28 +377,22 @@ class MelodyReducer:
                         ),
                     ):
                         should_keep = True
-
             if not self.RUN_AGGRESSIVE_MODE:
-                # Boundary Check
                 orig_m = self._get_context_at_offset(part, n.offset, "Measure")
                 if orig_m:
                     m_offset = n.offset - orig_m.offset
                 else:
                     m_offset = n.offset
                 is_boundary = abs(m_offset % beat_dur) < self.TOLERANCE
-
                 if is_boundary:
                     if boundary_hits % (self.RUN_BOUNDARY_SKIP + 1) == 0:
                         should_keep = True
                     boundary_hits += 1
-
-                # Leap Check
                 if i > 0:
                     prev = run[i - 1]
                     if n.isNote and prev.isNote:
                         if (n.pitch.ps - prev.pitch.ps) >= self.RUN_LEAP_THRESHOLD:
                             should_keep = True
-
             if should_keep:
                 raw_keepers.append(n)
 
@@ -364,7 +410,6 @@ class MelodyReducer:
             accum_note = copy.deepcopy(curr)
             accum_note.offset = curr.offset
             accum_note.duration = music21.duration.Duration(curr.duration.quarterLength)
-
             for next_n in sorted_keepers[1:]:
                 has_stop_articulation = False
                 if hasattr(next_n, "articulations"):
@@ -413,7 +458,7 @@ class MelodyReducer:
         # 4. Remove Old
         self._clear_range_in_part(part, start_global, end_global)
 
-        # 5. Insert New (If empty in Aggressive Mode, range remains cleared)
+        # 5. Insert New
         for i, (n, start) in enumerate(note_specs):
             if i < len(note_specs) - 1:
                 end = note_specs[i + 1][1]
