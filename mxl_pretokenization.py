@@ -1,7 +1,10 @@
-# v24.0 - Tenuto Protection & Refined Rules
-# 1. Adds _precalculate_tenuto_counts to map Lower Staff tenutos per measure.
-# 2. Implements "Partial Protection": If Lower Staff has dense tenutos, those specific notes are added to the draft
-#    even if Safe Mode selected the Upper Staff. This preserves melody without swapping staff entirely.
+# v26.0 - Mid-Measure Handoff Fix (Dominance Tracking)
+# 1. Logic Fix: Prevents Safe Mode from discarding Upper Staff if it was the melody
+#    at the start of the measure but became accompaniment at the end.
+# 2. Implements 'upper_ever_dominant' flag tracking through the timeline.
+# v25.0 - Config Updates
+# 1. Adds RUN_AGGRESSIVE_MODE and related constants.
+# 2. Defines LOWER_TENUTO_THRESHOLD.
 
 import music21
 import copy
@@ -18,9 +21,15 @@ INPUT_DIR = "./test"
 STAGING_DIR = "./staging"
 DEBUG = True
 
+# Melody Extraction Rules
 AMBIGUITY_LOOKAHEAD = 2
 ENABLE_DYNAMIC_EXCLUSION = True
 DYNAMIC_EXCLUSION_LIMIT = 8
+LOWER_TENUTO_THRESHOLD = 2
+
+# Run Simplification Rules
+RUN_AGGRESSIVE_MODE = True
+RUN_LEAP_THRESHOLD = 7
 
 DYNAMICS_MAP = {
     "pppp": 10,
@@ -58,7 +67,6 @@ class MxlPretokenizer:
 
         raw_name = Path(xml_path).stem
         self.score_name = clean_filename(raw_name)
-
         self.log_data = []
 
         try:
@@ -91,19 +99,21 @@ class MxlPretokenizer:
 
         try:
             melody_midi = self._generate_melody_draft()
-
             if melody_midi:
                 print(f"Running Melody Reducer for {self.score_name}...")
                 reducer = MelodyReducer(melody_midi, self.log_data)
+
+                # Apply Config
+                reducer.RUN_AGGRESSIVE_MODE = RUN_AGGRESSIVE_MODE
+                reducer.RUN_LEAP_THRESHOLD = RUN_LEAP_THRESHOLD
+
                 reducer.process()
 
                 out_path = os.path.join(
                     STAGING_DIR, f"{self.score_name}_MELODY_DRAFT.mid"
                 )
                 melody_midi.write("midi", fp=out_path)
-
                 self._write_changelog()
-
         except Exception as e:
             import traceback
 
@@ -124,10 +134,10 @@ class MxlPretokenizer:
                 else:
                     m_str = f"[M.  {s}]"
                 p_str = f"[{entry['part']}]"
-                line = f"{m_str:<15} {p_str:<5} {entry['text']}"
+                line = f"{p_str:<5} {m_str:<15} {entry['text']}"
                 f.write(line + "\n")
 
-    # ... [CORE LOGIC & LITERAL MIDI (Identical to previous)] ...
+    # ... [CORE LOGIC IDENTICAL] ...
     def _collect_grand_staff_measures(self, stream_obj):
         all_measures_by_part = []
         for p in stream_obj.parts:
@@ -281,9 +291,6 @@ class MxlPretokenizer:
             output_score.insert(0, parts[role])
         return output_score
 
-    # =========================================================================
-    # PIPELINE 2: MELODY DRAFT
-    # =========================================================================
     def _generate_melody_draft(self):
         output_score = music21.stream.Score()
         parts = {
@@ -297,7 +304,7 @@ class MxlPretokenizer:
 
         system_measures = self._collect_grand_staff_measures(self.melody_stream)
         start_states = self._calculate_start_volumes(system_measures)
-        tenuto_counts = self._precalculate_tenuto_counts(system_measures)  # NEW
+        tenuto_counts = self._precalculate_tenuto_counts(system_measures)
 
         padding_duration = self._calculate_padding(self.melody_stream)
         measure_num_shift = 1 if padding_duration > 0 else 0
@@ -315,7 +322,7 @@ class MxlPretokenizer:
         has_seen_upper_dynamic = False
 
         for i, sys_m in enumerate(system_measures):
-            # ... [Static Analysis Same as v22] ...
+            # ... [Analysis identical] ...
             current_upper_voices = set()
             voice_pitches = {}
             for n, _, s_id, v_id in sys_m["all_notes"]:
@@ -348,14 +355,18 @@ class MxlPretokenizer:
                 d_sid == 1 for _, _, d_sid, _ in sys_m["all_dynamics"]
             )
 
-            # ... [Timeline Logic Same as v22] ...
             timeline = []
             for dyn, offset, s_id, placement in sys_m["all_dynamics"]:
                 timeline.append((offset, 0, (dyn, s_id, placement)))
             for note, offset, s_id, v_id in sys_m["all_notes"]:
                 timeline.append((offset, 1, (note, s_id, v_id)))
             timeline.sort(key=lambda x: (x[0], x[1]))
+
+            # --- FIXED LOGIC START ---
             curr_u, curr_l = start_states[i]
+            # Track if Upper Staff was EVER >= Lower (Dominant) during this measure
+            upper_ever_dominant = curr_u >= curr_l
+
             processed_notes = []
             if current_upper_voices != exclusion_state["last_voice_set"]:
                 if exclusion_state["active"]:
@@ -374,6 +385,7 @@ class MxlPretokenizer:
                     exclusion_state["excluded_voice_prev_median"] = None
                     exclusion_start_measure = None
             exclusion_state["last_voice_set"] = current_upper_voices
+
             for idx, event in enumerate(timeline):
                 offset, etype, data = event
                 if etype == 0:
@@ -402,6 +414,11 @@ class MxlPretokenizer:
                         curr_l = val
                         if not measure_has_upper_dyn:
                             curr_u = val
+
+                    # Update Dominance Tracker
+                    if curr_u >= curr_l:
+                        upper_ever_dominant = True
+
                     if exclusion_state["active"]:
                         ex_vid = str(exclusion_state["voice_id"])
                         curr_med_check = current_medians.get(ex_vid, -1)
@@ -464,7 +481,6 @@ class MxlPretokenizer:
             measure_content = {"S": [], "A": [], "T": [], "B": []}
             voice_map = self._map_system_notes(processed_notes, bake_tremolos=False)
             is_ambiguous = self._check_ambiguity_lookahead(system_measures, i)
-
             if is_ambiguous:
                 marker = music21.expressions.TextExpression("CHECK HERE")
                 measure_content["S"].append((marker, 0.0))
@@ -472,29 +488,32 @@ class MxlPretokenizer:
                     measure_content[role].extend(notes)
             else:
                 target_staff = 1
-                if ENABLE_DYNAMIC_EXCLUSION and curr_u < curr_l:
+
+                # FIX: Only Safe-Swap to Lower if Upper was NEVER dominant
+                should_swap = curr_u < curr_l
+                if upper_ever_dominant:
+                    should_swap = False
+
+                if ENABLE_DYNAMIC_EXCLUSION and should_swap:
                     target_staff = 2
+
                 if target_staff == 1:
                     measure_content["S"] = voice_map["S"]
                 else:
                     measure_content["T"] = voice_map["T"]
 
-                # --- NEW: Tenuto Protection (Rule 3) ---
-                # "Do not exclude lower staff if..." -> Merge lower tenutos into draft
-                # Criteria: 3+ tenutos in current, or (>1 current and 3+ adjacent)
                 count_curr = tenuto_counts[i]
                 count_prev = tenuto_counts[i - 1] if i > 0 else 0
                 count_next = tenuto_counts[i + 1] if i < len(tenuto_counts) - 1 else 0
-
                 lower_protected = False
-                if count_curr >= 3:
+                if count_curr >= LOWER_TENUTO_THRESHOLD:
                     lower_protected = True
-                elif count_curr > 1 and (count_prev >= 3 or count_next >= 3):
+                elif count_curr > 1 and (
+                    count_prev >= LOWER_TENUTO_THRESHOLD
+                    or count_next >= LOWER_TENUTO_THRESHOLD
+                ):
                     lower_protected = True
-
                 if lower_protected and target_staff == 1:
-                    # Inject Tenuto notes from Lower Main Voice
-                    # We look at voice_map['T'] which contains candidates for T track
                     for note, off in voice_map["T"]:
                         if hasattr(note, "articulations"):
                             if any(
@@ -502,7 +521,6 @@ class MxlPretokenizer:
                                 for a in note.articulations
                             ):
                                 measure_content["T"].append((note, off))
-                    # Log it
                     self.log_data.append(
                         {
                             "start_m": sys_m["number"],
@@ -560,22 +578,16 @@ class MxlPretokenizer:
         return output_score
 
     def _precalculate_tenuto_counts(self, system_measures):
-        """Counts Tenuto articulations in the Lower Staff Main Voice (Staff 2, Voice 'Main') per measure."""
         counts = []
         for sys_m in system_measures:
-            # We must simulate _map_system_notes logic to find Lower Main Voice
-            # Logic: Group by Staff -> Sort Voices -> Pick First
-            staff_2_notes = []
             staff_groups = {2: {}}
             for n, _, s_id, v_id in sys_m["all_notes"]:
                 if s_id == 2:
                     if v_id not in staff_groups[2]:
                         staff_groups[2][v_id] = []
                     staff_groups[2][v_id].append(n)
-
             main_voice_notes = []
             if staff_groups[2]:
-                # Sort keys similar to _map_system_notes
                 v_ids = list(staff_groups[2].keys())
 
                 def sort_key(k):
@@ -586,8 +598,6 @@ class MxlPretokenizer:
 
                 v_ids.sort(key=sort_key)
                 main_voice_notes = staff_groups[2][v_ids[0]]
-
-            # Count Tenutos
             c = 0
             for n in main_voice_notes:
                 if hasattr(n, "articulations"):
@@ -599,7 +609,6 @@ class MxlPretokenizer:
             counts.append(c)
         return counts
 
-    # ... [OTHER HELPERS IDENTICAL TO v22.0] ...
     def _calculate_start_volumes(self, system_measures):
         start_states = []
         curr_u = 64

@@ -6,3 +6,5 @@ xml/*
 
 /__pycache__
 /test_reserves
+/mscz_staging
+/test_reserves_2

@@ -8,13 +8,19 @@ class MelodyReducer:
         self.score = score
         self.log_data = log_data
 
-        self.OSTINATO_MIN_REPS = 3
+        # Ostinato Config
+        self.OSTINATO_MIN_REPS = 2
         self.OSTINATO_PROTECTION_MEASURES = 8
+
+        # Run Config
         self.RUN_MIN_BEATS = 2.0
         self.RUN_MIN_NOTES_PER_BEAT = 3.0
         self.RUN_BOUNDARY_SKIP = 0
+        self.RUN_LEAP_THRESHOLD = 7
+        self.RUN_AGGRESSIVE_MODE = False  # Toggle this via external config if needed
+
         self.TOLERANCE = 0.05
-        self.DEBUG = True
+        self.DEBUG = False
 
     def process(self):
         for part_id in ["S", "A"]:
@@ -54,7 +60,7 @@ class MelodyReducer:
             }
         )
 
-    # ... [OSTINATO LOGIC IDENTICAL TO v23.0] ...
+    # ... [OSTINATO LOGIC SAME AS v23/24] ...
     def _remove_texture_patterns(self, part, part_id):
         flat_stream = part.flatten()
         elements = list(flat_stream.notesAndRests)
@@ -183,11 +189,11 @@ class MelodyReducer:
                 target_measure.insert(local_offset, new_note)
 
     # =========================================================================
-    # RULE 2: RUN SIMPLIFICATION (UPDATED)
+    # RULE 2: RUN SIMPLIFICATION (UPDATED v25)
     # =========================================================================
     def _simplify_runs(self, part):
-        flat_notes = list(part.flatten().notes)  # Only notes
-        elements = list(part.flatten().notesAndRests)  # For breaks
+        flat_notes = list(part.flatten().notes)
+        elements = list(part.flatten().notesAndRests)
         if not elements:
             return
 
@@ -210,11 +216,9 @@ class MelodyReducer:
                 prev = current_run[-1]
                 prev_end = prev.offset + prev.duration.quarterLength
                 is_continuous = abs(prev_end - n.offset) < self.TOLERANCE
-                is_equal_dur = (
-                    abs(prev.duration.quarterLength - n.duration.quarterLength)
-                    < self.TOLERANCE
-                )
-                if is_continuous and is_equal_dur:
+
+                # UPDATED: Removed is_equal_dur check
+                if is_continuous:
                     current_run.append(n)
                 else:
                     self._evaluate_and_process_run(current_run, part)
@@ -297,27 +301,18 @@ class MelodyReducer:
 
         keepers = []
         raw_keepers = []
-        raw_keepers.append(run[0])
-        raw_keepers.append(run[-1])
+
+        # UPDATED: Aggressive Mode Logic
+        if not self.RUN_AGGRESSIVE_MODE:
+            raw_keepers.append(run[0])
+            raw_keepers.append(run[-1])
+
         boundary_hits = 0
 
         for i, n in enumerate(run):
-            orig_m = self._get_context_at_offset(part, n.offset, "Measure")
-            if orig_m:
-                m_offset = n.offset - orig_m.offset
-            else:
-                m_offset = n.offset
-
-            is_boundary = False
-            if abs(m_offset % beat_dur) < self.TOLERANCE:
-                is_boundary = True
-
             should_keep = False
-            if is_boundary:
-                if boundary_hits % (self.RUN_BOUNDARY_SKIP + 1) == 0:
-                    should_keep = True
-                boundary_hits += 1
 
+            # Articulation Check (Always Active)
             if hasattr(n, "articulations") and n.articulations:
                 for art in n.articulations:
                     if isinstance(
@@ -331,12 +326,26 @@ class MelodyReducer:
                     ):
                         should_keep = True
 
-            # RULE: Leap must be UP a 5th or more
-            if i > 0:
-                prev = run[i - 1]
-                if n.isNote and prev.isNote:
-                    if (n.pitch.ps - prev.pitch.ps) >= 7:
-                        should_keep = True  # Changed from abs()
+            if not self.RUN_AGGRESSIVE_MODE:
+                # Boundary Check
+                orig_m = self._get_context_at_offset(part, n.offset, "Measure")
+                if orig_m:
+                    m_offset = n.offset - orig_m.offset
+                else:
+                    m_offset = n.offset
+                is_boundary = abs(m_offset % beat_dur) < self.TOLERANCE
+
+                if is_boundary:
+                    if boundary_hits % (self.RUN_BOUNDARY_SKIP + 1) == 0:
+                        should_keep = True
+                    boundary_hits += 1
+
+                # Leap Check
+                if i > 0:
+                    prev = run[i - 1]
+                    if n.isNote and prev.isNote:
+                        if (n.pitch.ps - prev.pitch.ps) >= self.RUN_LEAP_THRESHOLD:
+                            should_keep = True
 
             if should_keep:
                 raw_keepers.append(n)
@@ -348,7 +357,7 @@ class MelodyReducer:
                 sorted_keepers.append(k)
                 seen_ids.add(id(k))
 
-        # 2. Merge Pitch Classes (Updated Logic)
+        # 2. Merge Pitch Classes
         merged_keepers = []
         if sorted_keepers:
             curr = sorted_keepers[0]
@@ -357,7 +366,6 @@ class MelodyReducer:
             accum_note.duration = music21.duration.Duration(curr.duration.quarterLength)
 
             for next_n in sorted_keepers[1:]:
-                # Check for "Stop" Articulations in destination note
                 has_stop_articulation = False
                 if hasattr(next_n, "articulations"):
                     for art in next_n.articulations:
@@ -370,15 +378,13 @@ class MelodyReducer:
                         ):
                             has_stop_articulation = True
                             break
-
-                # Merge Condition: Same Pitch Class AND Target has no stop-articulation
                 if (
                     accum_note.isNote
                     and next_n.isNote
                     and accum_note.pitch.pitchClass == next_n.pitch.pitchClass
                     and not has_stop_articulation
                 ):
-                    pass  # Merge (accum extends later)
+                    pass
                 else:
                     merged_keepers.append(accum_note)
                     accum_note = copy.deepcopy(next_n)
@@ -407,7 +413,7 @@ class MelodyReducer:
         # 4. Remove Old
         self._clear_range_in_part(part, start_global, end_global)
 
-        # 5. Insert New
+        # 5. Insert New (If empty in Aggressive Mode, range remains cleared)
         for i, (n, start) in enumerate(note_specs):
             if i < len(note_specs) - 1:
                 end = note_specs[i + 1][1]
