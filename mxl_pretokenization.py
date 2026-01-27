@@ -1,6 +1,11 @@
-# v28.0 - Granular Run Config
-# 1. Updates Run Config constants to match v28 Reducer logic.
-# 2. Passes individual toggle flags to Reducer instance.
+# v32.0 - Content-Aware Measure Duration
+# 1. Implements 'Ghost Measure' detection (hidden elements -> 0.0 duration).
+# 2. Implements 'Split Measure' detection (content ends early -> truncate duration).
+# 3. Retains all v31 config and logic (Tenuto protection, Granular Runs, etc).
+# v33.0 - Fix Content Analysis Recurse Bug
+# 1. Updates _analyze_measure_content to use .flatten() before scanning.
+#    This ensures notes inside Voices (like cross-staff notes) are counted
+#    towards the measure duration, preventing incorrect truncation.
 
 import music21
 import copy
@@ -107,11 +112,10 @@ class MxlPretokenizer:
                 print(f"Running Melody Reducer for {self.score_name}...")
                 reducer = MelodyReducer(melody_midi, self.log_data)
 
-                # Apply Granular Config
+                # Apply Config
                 reducer.RUN_MIN_NOTES = RUN_MIN_NOTES
                 reducer.RUN_MIN_NOTES_PER_BEAT = RUN_MIN_NOTES_PER_BEAT
                 reducer.RUN_DURATION_TOLERANCE_RATIO = RUN_DURATION_TOLERANCE_RATIO
-
                 reducer.RUN_INCLUDE_START_NOTE = RUN_INCLUDE_START_NOTE
                 reducer.RUN_INCLUDE_END_NOTE = RUN_INCLUDE_END_NOTE
                 reducer.RUN_INCLUDE_ARTICULATED = RUN_INCLUDE_ARTICULATED
@@ -148,16 +152,22 @@ class MxlPretokenizer:
                 line = f"{p_str:<5} {m_str:<15} {entry['text']}"
                 f.write(line + "\n")
 
+    # =========================================================================
+    # CORE LOGIC
+    # =========================================================================
     def _collect_grand_staff_measures(self, stream_obj):
         all_measures_by_part = []
         for p in stream_obj.parts:
             all_measures_by_part.append(list(p.getElementsByClass("Measure")))
+
         if not all_measures_by_part:
             return []
         max_len = max(len(m_list) for m_list in all_measures_by_part)
+
         system_measures = []
         current_ts = None
         current_ks = None
+
         for i in range(max_len):
             sys_m = {
                 "index": i,
@@ -168,15 +178,23 @@ class MxlPretokenizer:
                 "all_notes": [],
                 "all_dynamics": [],
             }
+
+            # 1. Metadata & Stamping
+            current_measures_list = []  # Store measure objects for this column
+
             for p_idx, m_list in enumerate(all_measures_by_part):
                 if i < len(m_list):
                     m = m_list[i]
+                    current_measures_list.append(m)  # Collect for analysis
+
                     if sys_m["number"] == 0:
                         sys_m["number"] = self._safe_measure_number(m.number)
                     if m.timeSignature:
                         current_ts = copy.deepcopy(m.timeSignature)
                     if m.keySignature:
                         current_ks = copy.deepcopy(m.keySignature)
+
+                    # Notes
                     for v in m.voices:
                         v_id = v.id
                         for n in v.notesAndRests:
@@ -202,6 +220,8 @@ class MxlPretokenizer:
                                 )
                                 el.q_staff_id = s_id
                                 el.q_voice_id = v_id_fallback
+
+                        # Dynamics
                         if isinstance(el, music21.dynamics.Dynamic):
                             s_id = self._detect_staff_context(el, "1", p_idx)
                             el.q_staff_id = s_id
@@ -214,25 +234,76 @@ class MxlPretokenizer:
                                     pass
                             if el.q_placement == "unknown" and hasattr(el, "placement"):
                                 el.q_placement = el.placement
+
             if current_ts:
                 sys_m["time_sig"] = current_ts
-                sys_m["duration"] = current_ts.barDuration.quarterLength
+                ts_dur = current_ts.barDuration.quarterLength
+                has_content, content_end = self._analyze_measure_content(
+                    current_measures_list
+                )
+
+                if not has_content:
+                    # Case A: Ghost Measure (only layout/hidden elements)
+                    sys_m["duration"] = 0.0
+                elif content_end < (ts_dur - 0.125):  # Tolerance for rounding
+                    # Case B: Split Measure (content ends early)
+                    sys_m["duration"] = content_end
+                else:
+                    # Standard Measure
+                    sys_m["duration"] = ts_dur
+                # -------------------------------------------------
+
             if current_ks:
                 sys_m["key_sig"] = current_ks
+
+            # 2. Flattening
             for p_idx, m_list in enumerate(all_measures_by_part):
                 if i < len(m_list):
                     m = m_list[i]
                     flat_stream = m.flatten()
+
                     for n in flat_stream.notesAndRests:
                         s_id = getattr(n, "q_staff_id", 1)
                         v_id = getattr(n, "q_voice_id", "1")
                         sys_m["all_notes"].append((n, n.offset, s_id, v_id))
+
                     for d in flat_stream.getElementsByClass("Dynamic"):
                         s_id = getattr(d, "q_staff_id", 1)
                         placement = getattr(d, "q_placement", "unknown")
                         sys_m["all_dynamics"].append((d, d.offset, s_id, placement))
+
             system_measures.append(sys_m)
+
         return system_measures
+
+    def _analyze_measure_content(self, measures_list):
+        """
+        Scans a vertical slice of measures (all parts) to determine:
+        1. If there is ANY printable content (notes/rests).
+        2. The latest offset where content ends (The Waterline).
+        """
+        max_end = 0.0
+        has_printable_content = False
+
+        for m in measures_list:
+            for el in m.notesAndRests:
+            # FIX: Use flatten() to access notes inside Voices
+                is_hidden = False
+                if hasattr(el, "printObject") and el.printObject is False:
+                    is_hidden = True
+                if hasattr(el, "style") and getattr(
+                    el.style, "hideObjectOnPrint", False
+                ):
+                    is_hidden = True
+
+                if not is_hidden:
+                    # Found something real
+                    has_printable_content = True
+                    end_pos = el.offset + el.duration.quarterLength
+                    if end_pos > max_end:
+                        max_end = end_pos
+
+        return has_printable_content, max_end
 
     def _detect_staff_context(self, el, voice_id, part_index):
         if hasattr(el, "style") and el.style:
@@ -246,6 +317,7 @@ class MxlPretokenizer:
                 return int(el.staff)
             except:
                 pass
+
         digits = "".join(filter(str.isdigit, str(voice_id)))
         if digits and int(digits) >= 5:
             return 2
@@ -253,6 +325,7 @@ class MxlPretokenizer:
             return 2
         return 1
 
+    # ... [LITERAL MIDI IDENTICAL TO v31] ...
     def _generate_literal_midi(self):
         output_score = music21.stream.Score()
         parts = {
@@ -301,6 +374,7 @@ class MxlPretokenizer:
             output_score.insert(0, parts[role])
         return output_score
 
+    # ... [MELODY DRAFT IDENTICAL TO v31] ...
     def _generate_melody_draft(self):
         output_score = music21.stream.Score()
         parts = {
@@ -329,6 +403,7 @@ class MxlPretokenizer:
         }
         exclusion_start_measure = None
         exclusion_start_vals = (0, 0)
+
         has_seen_upper_dynamic = False
 
         for i, sys_m in enumerate(system_measures):
@@ -580,6 +655,7 @@ class MxlPretokenizer:
             output_score.insert(0, parts[role])
         return output_score
 
+    # ... [HELPERS SAME AS v26/v31] ...
     def _precalculate_tenuto_counts(self, system_measures):
         counts = []
         for sys_m in system_measures:

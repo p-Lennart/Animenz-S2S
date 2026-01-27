@@ -21,9 +21,9 @@ class MelodyReducer:
         self.RUN_INCLUDE_START_NOTE = True
         self.RUN_INCLUDE_END_NOTE = True
         self.RUN_INCLUDE_ARTICULATED = True
-        self.RUN_BOUNDARY_SKIP = 0
+        self.RUN_BOUNDARY_SKIP = 0  # Set to -1 to disable boundary checks
         self.RUN_LEAP_THRESHOLD = 7
-        self.RUN_AGGRESSIVE_MODE = False
+        self.RUN_AGGRESSIVE_MODE = False  # Legacy flag, prefer granular
 
         self.TOLERANCE = 0.05
         self.DEBUG = False
@@ -195,7 +195,7 @@ class MelodyReducer:
                 target_measure.insert(local_offset, new_note)
 
     # =========================================================================
-    # RULE 2: RUN SIMPLIFICATION (UPDATED v30)
+    # RULE 2: RUN SIMPLIFICATION (UPDATED v31 - Fix Regression)
     # =========================================================================
     def _simplify_runs(self, part):
         # 1. Fetch WITHOUT Sorting (Restores v24 natural order)
@@ -210,8 +210,7 @@ class MelodyReducer:
         last_processed_offset = -1.0
 
         for el in elements:
-            # 2. CHRONOLOGICAL SAFETY CHECK (New)
-            # If an element claims to be earlier than where we are, it's a ghost/bug.
+            # 2. CHRONOLOGICAL SAFETY CHECK
             if el.offset < last_processed_offset - self.TOLERANCE:
                 if self.DEBUG:
                     print(
@@ -219,7 +218,6 @@ class MelodyReducer:
                     )
                 continue
 
-            # Update high water mark
             if el.offset > last_processed_offset:
                 last_processed_offset = el.offset
 
@@ -356,43 +354,56 @@ class MelodyReducer:
             f"Simplify run (Notes={len(run)}, Beats={beats:.1f}) [{p_str}]",
         )
 
-        keepers = []
         raw_keepers = []
-        if not self.RUN_AGGRESSIVE_MODE:
+
+        # 1. ANCHOR NOTES (Restored Granular Config)
+        if self.RUN_INCLUDE_START_NOTE:
             raw_keepers.append(run[0])
+        if self.RUN_INCLUDE_END_NOTE:
             raw_keepers.append(run[-1])
+
         boundary_hits = 0
 
         for i, n in enumerate(run):
             should_keep = False
-            if hasattr(n, "articulations") and n.articulations:
-                for art in n.articulations:
-                    if isinstance(
-                        art,
-                        (
-                            music21.articulations.Accent,
-                            music21.articulations.Tenuto,
-                            music21.articulations.StrongAccent,
-                            music21.articulations.Staccato,
-                        ),
-                    ):
-                        should_keep = True
-            if not self.RUN_AGGRESSIVE_MODE:
+
+            # Articulation Check
+            if self.RUN_INCLUDE_ARTICULATED:
+                if hasattr(n, "articulations") and n.articulations:
+                    for art in n.articulations:
+                        if isinstance(
+                            art,
+                            (
+                                music21.articulations.Accent,
+                                music21.articulations.Tenuto,
+                                music21.articulations.StrongAccent,
+                                music21.articulations.Staccato,
+                            ),
+                        ):
+                            should_keep = True
+
+            # Boundary Check
+            # Only process if skipping is not disabled (>=0)
+            if self.RUN_BOUNDARY_SKIP >= 0:
                 orig_m = self._get_context_at_offset(part, n.offset, "Measure")
                 if orig_m:
                     m_offset = n.offset - orig_m.offset
                 else:
                     m_offset = n.offset
                 is_boundary = abs(m_offset % beat_dur) < self.TOLERANCE
+
                 if is_boundary:
                     if boundary_hits % (self.RUN_BOUNDARY_SKIP + 1) == 0:
                         should_keep = True
                     boundary_hits += 1
-                if i > 0:
-                    prev = run[i - 1]
-                    if n.isNote and prev.isNote:
-                        if (n.pitch.ps - prev.pitch.ps) >= self.RUN_LEAP_THRESHOLD:
-                            should_keep = True
+
+            # Leap Check
+            if i > 0:
+                prev = run[i - 1]
+                if n.isNote and prev.isNote:
+                    if (n.pitch.ps - prev.pitch.ps) >= self.RUN_LEAP_THRESHOLD:
+                        should_keep = True
+
             if should_keep:
                 raw_keepers.append(n)
 
