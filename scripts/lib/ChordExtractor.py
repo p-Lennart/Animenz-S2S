@@ -1,4 +1,4 @@
-# VERSION = 1.3 (Enharmonic Fix & Dyad Inference)
+# VERSION = 1.4 (Formatted Output: MM:SS.mmm)
 import os
 import music21
 import copy
@@ -209,7 +209,10 @@ class ChordExtractor:
         best_rank = 1 
         current_notes = [bass_note]
         
-        print(f"[DEBUG] T: {timestamp:.3f} | Bass: {bass_note.pitch.nameWithOctave}")
+        # Log formatted timestamp for consistency
+        mins = int(timestamp // 60)
+        secs = timestamp % 60
+        print(f"[DEBUG] T: {mins:02d}:{secs:06.3f} | Bass: {bass_note.pitch.nameWithOctave}")
 
         limit = min(len(priority_pcs) + 1, 7) 
 
@@ -222,42 +225,25 @@ class ChordExtractor:
 
             test_chord = music21.chord.Chord(current_notes)
             
-            # 1. Standard Identification
-            try: 
-                symbol = music21.harmony.chordSymbolFigureFromChord(test_chord)
-            except: 
-                symbol = 'Chord Symbol Cannot Be Identified'
+            try: symbol = music21.harmony.chordSymbolFigureFromChord(test_chord)
+            except: symbol = 'Chord Symbol Cannot Be Identified'
 
-            # 2. Enharmonic Fix (Robust Parsing)
             if symbol == 'Chord Symbol Cannot Be Identified':
-                # Try simple enharmonic simplification
                 temp_chord = copy.deepcopy(test_chord)
                 temp_chord.simplifyEnharmonics(inPlace=True)
-                try: 
-                    symbol = music21.harmony.chordSymbolFigureFromChord(temp_chord)
-                except: 
-                    pass
+                try: symbol = music21.harmony.chordSymbolFigureFromChord(temp_chord)
+                except: pass
             
-            # 3. Manual Dyad Inference (Inference for Bass + 3rd)
             unique_pcs = len(set(n.pitch.pitchClass for n in current_notes))
             
             if symbol == 'Chord Symbol Cannot Be Identified' and unique_pcs == 2:
-                # Calculate interval from Bass (current_notes[0]) to the other note
-                # We simply find the difference in semitones (modulo 12)
-                # Notes: current_notes[0] is Bass. current_notes[1] is the added note.
                 bass_p = current_notes[0].pitch
-                added_p = current_notes[-1].pitch # Last added note
-                
+                added_p = current_notes[-1].pitch 
                 diff = (added_p.pitchClass - bass_p.pitchClass) % 12
-                
-                if diff == 3: # Minor 3rd
-                    symbol = f"{bass_p.name}m"
-                elif diff == 4: # Major 3rd
-                    symbol = f"{bass_p.name}"
-                elif diff == 7: # Perfect 5th
-                    symbol = f"{bass_p.name}power"
+                if diff == 3: symbol = f"{bass_p.name}m"
+                elif diff == 4: symbol = f"{bass_p.name}"
+                elif diff == 7: symbol = f"{bass_p.name}power"
 
-            # Rank and Decide
             rank = self._get_quality_rank(symbol, unique_pcs)
             
             note_names = [n.pitch.name for n in current_notes]
@@ -282,6 +268,10 @@ class ChordExtractor:
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 for timestamp, chord_name in self.extracted_data:
-                    f.write(f"[{timestamp:.3f}: {chord_name}]\n")
+                    # Conversion to MM:SS.mmm
+                    minutes = int(timestamp // 60)
+                    seconds = timestamp % 60
+                    # Pad minutes to 2 digits, Seconds to 06.3f (e.g. 09.500)
+                    f.write(f"[{minutes:02d}:{seconds:06.3f}] {chord_name}\n")
             print(f"[ChordExtractor] Saved {len(self.extracted_data)} lines to {filepath}")
         except IOError as e: print(f"[ChordExtractor] Error writing to file: {e}")

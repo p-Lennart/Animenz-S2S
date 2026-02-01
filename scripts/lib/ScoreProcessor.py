@@ -9,8 +9,9 @@ class ScoreProcessor:
     """
     Logic Source: v34.0 (Stable)
     """
-    def __init__(self, xml_path, config):
+    def __init__(self, xml_path, score_name, config):
         self.xml_path = xml_path
+        self.score_name = score_name
         self.config = config
         self.log_data = []
         
@@ -36,8 +37,6 @@ class ScoreProcessor:
             print(f"CRITICAL: Could not parse {xml_path}: {e}")
             self.score = music21.stream.Score()
 
-        self.score_name = Path(xml_path).stem # Clean name usually handled by caller
-        
         try:
             self.score = self.score.expandRepeats()
         except Exception as e:

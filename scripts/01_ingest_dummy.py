@@ -1,7 +1,6 @@
 import os
 import glob
 import yaml
-import shutil
 from lib.ScoreProcessor import ScoreProcessor
 from lib.ChordExtractor import ChordExtractor
 
@@ -57,14 +56,12 @@ def main():
         print(f"Processing: {score_name} -> {score_dir}")
         
         try:
-            processor = ScoreProcessor(xml_file, current_config)
+            processor = ScoreProcessor(xml_file, score_name, current_config)
             
             # Hook for future Chord Extractor:
             literal_stream, _ = processor.process(output_dir=score_dir)
             if literal_stream:
                 ChordExtractor(literal_stream).save(score_dir)
-            
-            # processor.process(output_dir=score_dir)
             
         except Exception as e:
             import traceback
