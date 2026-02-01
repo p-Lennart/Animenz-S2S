@@ -9,3 +9,4 @@ xml/*
 /mscz_staging
 /test_reserves_2
 /mscz_potential
+*.pyc

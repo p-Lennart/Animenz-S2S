@@ -3,9 +3,10 @@ import glob
 import yaml
 import shutil
 from lib.ScoreProcessor import ScoreProcessor
+from lib.ChordExtractor import ChordExtractor
 
 # --- PATHS ---
-INPUT_DIR = "./../xml"
+INPUT_DIR = "./../test"
 STAGING_DIR = "./../staging"
 CONFIG_FILE = "default_config.yaml"
 
@@ -40,6 +41,7 @@ def main():
         
         # Create Staging Directory
         score_dir = os.path.join(STAGING_DIR, score_name)
+        score_dir = os.path.normpath(score_dir)
         os.makedirs(score_dir, exist_ok=True)
         
         # Copy Config (meta.yaml)
@@ -58,11 +60,11 @@ def main():
             processor = ScoreProcessor(xml_file, current_config)
             
             # Hook for future Chord Extractor:
-            # literal_stream, _ = processor.process(output_dir=score_dir)
-            # if literal_stream:
-            #     ChordExtractor(literal_stream).save(os.path.join(score_dir, "CHORDS.txt"))
+            literal_stream, _ = processor.process(output_dir=score_dir)
+            if literal_stream:
+                ChordExtractor(literal_stream).save(score_dir)
             
-            processor.process(output_dir=score_dir)
+            # processor.process(output_dir=score_dir)
             
         except Exception as e:
             import traceback
