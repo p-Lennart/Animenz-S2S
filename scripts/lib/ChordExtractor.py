@@ -1,6 +1,7 @@
-# VERSION = 1.2 (Anchor Update Logic & Deduped Chain)
+# VERSION = 1.3 (Enharmonic Fix & Dyad Inference)
 import os
 import music21
+import copy
 from collections import defaultdict
 
 class ChordExtractor:
@@ -45,13 +46,12 @@ class ChordExtractor:
             if not bass_candidate_notes:
                 continue
 
-            # 3. Define Bass Pitch Subset (Strings)
+            # 3. Define Bass Pitch Subset
             bass_pitch_names = self._define_bass_subset(bass_candidate_notes)
             
             # 4. Identify Bass Attacks
             bass_attacks = []
             for n_obj, offset in bass_candidate_notes:
-                # Compare by NameWithOctave (Value)
                 if n_obj.pitch.nameWithOctave in bass_pitch_names:
                     if not bass_attacks:
                         bass_attacks.append((offset, n_obj.pitch.pitchClass))
@@ -136,11 +136,6 @@ class ChordExtractor:
         return notes
 
     def _define_bass_subset(self, notes):
-        """
-        Returns a SET of nameWithOctave strings.
-        Implements Ladder/Anchor Logic: 
-        Only updates reference if interval is small (<= 7 semitones).
-        """
         events = defaultdict(list)
         for n, off in notes:
             events[off].append(n)
@@ -152,39 +147,25 @@ class ChordExtractor:
 
         unique_map = {n.pitch.ps: n for n in lowest_candidates}
         unique_lows = sorted(unique_map.values(), key=lambda x: x.pitch.ps)
-        
         if not unique_lows: return set()
 
         bass_subset = set()
         current_ref = unique_lows[0]
         bass_subset.add(current_ref.pitch.nameWithOctave)
-        
         F2_PS = music21.pitch.Pitch('F2').ps
 
         for i in range(1, len(unique_lows)):
             candidate = unique_lows[i]
             interval = candidate.pitch.ps - current_ref.pitch.ps
             
-            # 1. Determine Max Jump for ACCEPTANCE
-            if current_ref.pitch.ps < F2_PS: 
-                max_jump = 12
-            else: 
-                max_jump = 5
+            if current_ref.pitch.ps < F2_PS: max_jump = 12
+            else: max_jump = 5
             
-            # 2. Check Acceptance
             if interval <= max_jump:
                 bass_subset.add(candidate.pitch.nameWithOctave)
-                
-                # 3. Check Anchor Update
-                # Only "move the ladder" if movement is melodic (<= Perfect 5th).
-                # If it's a large jump (e.g. Octave), we accept the note but keep 
-                # comparing future notes against the original low anchor.
                 if interval <= 7:
                     current_ref = candidate 
-                
-            else: 
-                break
-            
+            else: break
         return bass_subset
 
     def _find_lowest_at_offset(self, window_notes, target_offset):
@@ -240,10 +221,43 @@ class ChordExtractor:
                 current_notes.append(new_n)
 
             test_chord = music21.chord.Chord(current_notes)
-            try: symbol = music21.harmony.chordSymbolFigureFromChord(test_chord)
-            except: symbol = 'Chord Symbol Cannot Be Identified'
+            
+            # 1. Standard Identification
+            try: 
+                symbol = music21.harmony.chordSymbolFigureFromChord(test_chord)
+            except: 
+                symbol = 'Chord Symbol Cannot Be Identified'
 
+            # 2. Enharmonic Fix (Robust Parsing)
+            if symbol == 'Chord Symbol Cannot Be Identified':
+                # Try simple enharmonic simplification
+                temp_chord = copy.deepcopy(test_chord)
+                temp_chord.simplifyEnharmonics(inPlace=True)
+                try: 
+                    symbol = music21.harmony.chordSymbolFigureFromChord(temp_chord)
+                except: 
+                    pass
+            
+            # 3. Manual Dyad Inference (Inference for Bass + 3rd)
             unique_pcs = len(set(n.pitch.pitchClass for n in current_notes))
+            
+            if symbol == 'Chord Symbol Cannot Be Identified' and unique_pcs == 2:
+                # Calculate interval from Bass (current_notes[0]) to the other note
+                # We simply find the difference in semitones (modulo 12)
+                # Notes: current_notes[0] is Bass. current_notes[1] is the added note.
+                bass_p = current_notes[0].pitch
+                added_p = current_notes[-1].pitch # Last added note
+                
+                diff = (added_p.pitchClass - bass_p.pitchClass) % 12
+                
+                if diff == 3: # Minor 3rd
+                    symbol = f"{bass_p.name}m"
+                elif diff == 4: # Major 3rd
+                    symbol = f"{bass_p.name}"
+                elif diff == 7: # Perfect 5th
+                    symbol = f"{bass_p.name}power"
+
+            # Rank and Decide
             rank = self._get_quality_rank(symbol, unique_pcs)
             
             note_names = [n.pitch.name for n in current_notes]
