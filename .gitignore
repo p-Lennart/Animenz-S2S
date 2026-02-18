@@ -9,5 +9,4 @@ xml/*
 /mscz_staging
 /test_reserves_2
 /mscz_potential
-*.pyc
-*.pyc
+scripts/lib/__pycache__

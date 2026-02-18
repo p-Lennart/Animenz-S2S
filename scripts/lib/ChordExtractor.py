@@ -1,21 +1,37 @@
-# VERSION = 1.4 (Formatted Output: MM:SS.mmm)
+# VERSION = 1.7 (Chronological Contour & Running Anchor)
 import os
 import music21
 import copy
 from collections import defaultdict
 
 class ChordExtractor:
+    # Configuration: Start Pitch -> (Max Accept Jump UP, Max Anchor Move UP)
+    # Downward movement is always accepted and always moves the anchor.
+    BASS_TIERS = {
+        'C0': (12, 7), # Deep Bass: Octave up allowed, Anchor moves on 5th
+        'C2': (6, 5),  # Mid Bass: <5th up allowed, Anchor moves on 4th
+        'A2': (2, 2),  # High Bass: Stepwise only (filters ostinatos)
+    }
+
     def __init__(self, literal_stream, time_scale=0.5):
         self.stream = literal_stream
         self.time_scale = time_scale
         self.extracted_data = [] 
+        
+        # Pre-calculate Tier Pitch Spaces (ps) for efficiency
+        # Sort DESCENDING so we find the "highest floor" first
+        self.sorted_tiers = []
+        for p_name, rules in self.BASS_TIERS.items():
+            ps = music21.pitch.Pitch(p_name).ps
+            self.sorted_tiers.append((ps, rules))
+        self.sorted_tiers.sort(key=lambda x: x[0], reverse=True)
+
         self._process_stream()
 
     def _process_stream(self):
         if not self.stream:
             return
 
-        # 1. Map Parts
         part_map = {}
         try:
             if isinstance(self.stream, music21.stream.Score):
@@ -40,16 +56,15 @@ class ChordExtractor:
             measure_start = m.offset
             measure_end = m.offset + m.duration.quarterLength
             
-            # 2. Get Notes for BASS Candidates
             bass_candidate_notes = self._get_bass_candidates_for_measure(measure_start, measure_end, part_map)
             
             if not bass_candidate_notes:
                 continue
 
-            # 3. Define Bass Pitch Subset
+            # Step 1: Define Bass Subset using Chronological Contour
             bass_pitch_names = self._define_bass_subset(bass_candidate_notes)
             
-            # 4. Identify Bass Attacks
+            # Step 2: Identify Bass Attacks (Filter candidates by the subset)
             bass_attacks = []
             for n_obj, offset in bass_candidate_notes:
                 if n_obj.pitch.nameWithOctave in bass_pitch_names:
@@ -61,7 +76,7 @@ class ChordExtractor:
             
             bass_attacks.sort(key=lambda x: x[0])
 
-            # 5. Merge Consecutive Identical Bass PCs
+            # Step 3: Merge Consecutive Identical Bass PCs
             merged_boundaries = []
             if bass_attacks:
                 merged_boundaries.append(bass_attacks[0][0])
@@ -74,7 +89,7 @@ class ChordExtractor:
             
             merged_boundaries.append(measure_end)
             
-            # 6. Process Windows
+            # Step 4: Process Windows
             for i in range(len(merged_boundaries) - 1):
                 w_start = merged_boundaries[i]
                 w_end = merged_boundaries[i+1]
@@ -85,7 +100,6 @@ class ChordExtractor:
                 current_bass_note = self._find_lowest_at_offset(window_notes, w_start)
                 if not current_bass_note: continue
 
-                # Context Carryover
                 unique_pitches = set(n.pitch.nameWithOctave for n, o in window_notes)
                 notes_pool = window_notes
                 if len(unique_pitches) <= 3 and previous_window_notes:
@@ -136,36 +150,69 @@ class ChordExtractor:
         return notes
 
     def _define_bass_subset(self, notes):
+        """
+        Returns a SET of nameWithOctave strings.
+        Implements CHRONOLOGICAL CONTOUR Logic.
+        1. Find lowest note at each timeline event.
+        2. Walk forward in time, comparing against a running Anchor.
+        """
+        # 1. Group by Offset to find Chronological Contour
         events = defaultdict(list)
         for n, off in notes:
             events[off].append(n)
         
-        lowest_candidates = []
+        # Create list of (offset, lowest_note) sorted by time
+        timeline = []
         for off in sorted(events.keys()):
             vertical = sorted(events[off], key=lambda x: x.pitch.ps)
-            lowest_candidates.append(vertical[0])
-
-        unique_map = {n.pitch.ps: n for n in lowest_candidates}
-        unique_lows = sorted(unique_map.values(), key=lambda x: x.pitch.ps)
-        if not unique_lows: return set()
+            lowest_note = vertical[0]
+            timeline.append(lowest_note)
+            
+        if not timeline: return set()
 
         bass_subset = set()
-        current_ref = unique_lows[0]
-        bass_subset.add(current_ref.pitch.nameWithOctave)
-        F2_PS = music21.pitch.Pitch('F2').ps
-
-        for i in range(1, len(unique_lows)):
-            candidate = unique_lows[i]
-            interval = candidate.pitch.ps - current_ref.pitch.ps
+        
+        # 2. Chronological Walk
+        # Initialize Anchor with the very first note of the measure
+        current_anchor = timeline[0]
+        bass_subset.add(current_anchor.pitch.nameWithOctave)
+        
+        for i in range(1, len(timeline)):
+            candidate = timeline[i]
             
-            if current_ref.pitch.ps < F2_PS: max_jump = 12
-            else: max_jump = 5
+            anchor_ps = current_anchor.pitch.ps
+            cand_ps = candidate.pitch.ps
+            interval = cand_ps - anchor_ps
             
-            if interval <= max_jump:
+            # CASE A: Downward Movement (or repetition)
+            # Always accept drops to find true deep bass.
+            if interval <= 0:
                 bass_subset.add(candidate.pitch.nameWithOctave)
-                if interval <= 7:
-                    current_ref = candidate 
-            else: break
+                current_anchor = candidate # Anchor follows the drop
+                continue
+
+            # CASE B: Upward Movement
+            # Check against Tiers based on CURRENT ANCHOR
+            max_accept = 12 # Default fallback
+            max_anchor_move = 7
+            
+            for tier_ps, (acc, move) in self.sorted_tiers:
+                if anchor_ps >= tier_ps:
+                    max_accept = acc
+                    max_anchor_move = move
+                    break
+            
+            if interval <= max_accept:
+                bass_subset.add(candidate.pitch.nameWithOctave)
+                
+                # Only move anchor if jump is small enough (melodic)
+                # If jump is large (e.g. octave stride), anchor stays low.
+                if interval <= max_anchor_move:
+                    current_anchor = candidate
+            
+            # If interval > max_accept, REJECT. 
+            # Anchor remains where it was.
+            
         return bass_subset
 
     def _find_lowest_at_offset(self, window_notes, target_offset):
@@ -209,7 +256,6 @@ class ChordExtractor:
         best_rank = 1 
         current_notes = [bass_note]
         
-        # Log formatted timestamp for consistency
         mins = int(timestamp // 60)
         secs = timestamp % 60
         print(f"[DEBUG] T: {mins:02d}:{secs:06.3f} | Bass: {bass_note.pitch.nameWithOctave}")
@@ -268,10 +314,8 @@ class ChordExtractor:
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 for timestamp, chord_name in self.extracted_data:
-                    # Conversion to MM:SS.mmm
                     minutes = int(timestamp // 60)
                     seconds = timestamp % 60
-                    # Pad minutes to 2 digits, Seconds to 06.3f (e.g. 09.500)
                     f.write(f"[{minutes:02d}:{seconds:06.3f}] {chord_name}\n")
             print(f"[ChordExtractor] Saved {len(self.extracted_data)} lines to {filepath}")
         except IOError as e: print(f"[ChordExtractor] Error writing to file: {e}")
