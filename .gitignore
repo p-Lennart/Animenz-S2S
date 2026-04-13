@@ -10,3 +10,6 @@ xml/*
 /test_reserves_2
 /mscz_potential
 scripts/lib/__pycache__
+/staging2
+/.vscode
+*.pyc

@@ -4,35 +4,48 @@ import os
 import statistics
 from pathlib import Path
 from lib.MelodyReducer import MelodyReducer
+from lib.ChordExtractor import ChordExtractor  # Added ChordExtractor import
+
 
 class ScoreProcessor:
     """
-    Logic Source: v34.0 (Stable)
+    Logic Source: v34.0 (Stable) + ChordExtractor Integration
     """
+
     def __init__(self, xml_path, score_name, config):
         self.xml_path = xml_path
         self.score_name = score_name
         self.config = config
         self.log_data = []
-        
+
         # --- CONFIG MAPPING ---
-        self.DEBUG = config.get('DEBUG', False)
-        self.ENABLE_MELODY_REDUCER = config.get('ENABLE_MELODY_REDUCER', True)
-        self.AMBIGUITY_LOOKAHEAD = config.get('AMBIGUITY_LOOKAHEAD', 1)
-        self.ENABLE_DYNAMIC_EXCLUSION = config.get('ENABLE_DYNAMIC_EXCLUSION', True)
-        self.DYNAMIC_EXCLUSION_LIMIT = config.get('DYNAMIC_EXCLUSION_LIMIT', 8)
-        self.LOWER_TENUTO_THRESHOLD = config.get('LOWER_TENUTO_THRESHOLD', 3)
-        self.SAFE_MODE_PRESERVE_LOWER = config.get('SAFE_MODE_PRESERVE_LOWER', False)
-        
+        self.DEBUG = config.get("DEBUG", False)
+        self.ENABLE_MELODY_REDUCER = config.get("ENABLE_MELODY_REDUCER", True)
+        self.AMBIGUITY_LOOKAHEAD = config.get("AMBIGUITY_LOOKAHEAD", 1)
+        self.ENABLE_DYNAMIC_EXCLUSION = config.get("ENABLE_DYNAMIC_EXCLUSION", True)
+        self.DYNAMIC_EXCLUSION_LIMIT = config.get("DYNAMIC_EXCLUSION_LIMIT", 8)
+        self.LOWER_TENUTO_THRESHOLD = config.get("LOWER_TENUTO_THRESHOLD", 3)
+        self.SAFE_MODE_PRESERVE_LOWER = config.get("SAFE_MODE_PRESERVE_LOWER", False)
+
         self.DYNAMICS_MAP = {
-            'pppp': 10, 'ppp': 20, 'pp': 30, 'p': 40, 'mp': 50,
-            'mf': 60, 'f': 70, 'ff': 80, 'fff': 90, 'ffff': 100,
-            'sf': 85, 'sfz': 85, 'fp': 50
+            "pppp": 10,
+            "ppp": 20,
+            "pp": 30,
+            "p": 40,
+            "mp": 50,
+            "mf": 60,
+            "f": 70,
+            "ff": 80,
+            "fff": 90,
+            "ffff": 100,
+            "sf": 85,
+            "sfz": 85,
+            "fp": 50,
         }
 
         # Parsing
         try:
-            self.score = music21.converter.parse(xml_path, format='musicxml')
+            self.score = music21.converter.parse(xml_path, format="musicxml")
         except Exception as e:
             print(f"CRITICAL: Could not parse {xml_path}: {e}")
             self.score = music21.stream.Score()
@@ -41,14 +54,14 @@ class ScoreProcessor:
             self.score = self.score.expandRepeats()
         except Exception as e:
             print(f"WARNING: Could not expand repeats. Processing linear score.")
-        
+
         self.literal_stream = copy.deepcopy(self.score)
         self.melody_stream = copy.deepcopy(self.score)
 
     def process(self, output_dir=None, write_files=True):
         """
-        Runs the pipeline. 
-        If write_files=True, saves .mid files to output_dir.
+        Runs the pipeline.
+        If write_files=True, saves .mid and .tsv files to output_dir.
         Returns: (literal_midi_stream, melody_midi_stream)
         """
         if not self.literal_stream.parts:
@@ -59,34 +72,63 @@ class ScoreProcessor:
         literal_midi = self._generate_literal_midi()
         if write_files and literal_midi and output_dir:
             out_path = os.path.join(output_dir, f"{self.score_name}_LITERAL.mid")
-            literal_midi.write('midi', fp=out_path)
-        
+            literal_midi.write("midi", fp=out_path)
+
+        # 1.5 CHORD EXTRACTION
+        if literal_midi:
+            try:
+                if self.DEBUG:
+                    print("Running Chord Extractor...")
+                ce = ChordExtractor(literal_midi)
+                chord_events = ce.get_chord_events()
+
+                if write_files and output_dir and chord_events:
+                    chords_path = os.path.join(
+                        output_dir, f"{self.score_name}_CHORDS.tsv"
+                    )
+                    with open(chords_path, "w", encoding="utf-8") as f:
+                        # Write TSV Header
+                        f.write("Timestamp\tChord\tOffset\n")
+                        # Write data rows
+                        for timestamp, chord_name, offset in chord_events:
+                            f.write(f"{timestamp}\t{chord_name}\t{offset}\n")
+            except Exception as e:
+                import traceback
+
+                traceback.print_exc()
+                print(f"ERROR processing CHORDS for {self.score_name}: {e}")
+
         # 2. MELODY DRAFT
         melody_midi = self._generate_melody_draft()
         if melody_midi:
             if self.ENABLE_MELODY_REDUCER:
-                if self.DEBUG: print("Running Melody Reducer...")
+                if self.DEBUG:
+                    print("Running Melody Reducer...")
                 reducer = MelodyReducer(melody_midi, self.log_data, self.config)
                 reducer.process()
-            
+
             if write_files and output_dir:
-                out_path = os.path.join(output_dir, f"{self.score_name}_MELODY_DRAFT.mid")
-                melody_midi.write('midi', fp=out_path)
+                out_path = os.path.join(
+                    output_dir, f"{self.score_name}_MELODY_DRAFT.mid"
+                )
+                melody_midi.write("midi", fp=out_path)
                 self._write_changelog(output_dir)
 
         return literal_midi, melody_midi
 
     def _write_changelog(self, output_dir):
         log_path = os.path.join(output_dir, f"{self.score_name}_CHANGELOG.txt")
-        self.log_data.sort(key=lambda x: x['start_m'])
+        self.log_data.sort(key=lambda x: x["start_m"])
         with open(log_path, "w") as f:
             f.write(f"Melody Extraction Changelog: {self.score_name}\n")
-            f.write("="*80 + "\n\n")
+            f.write("=" * 80 + "\n\n")
             for entry in self.log_data:
-                s = entry['start_m']
-                e = entry['end_m']
-                if s != e and e > 0: m_str = f"[Mm. {s}-{e}]"
-                else: m_str = f"[M.  {s}]"
+                s = entry["start_m"]
+                e = entry["end_m"]
+                if s != e and e > 0:
+                    m_str = f"[Mm. {s}-{e}]"
+                else:
+                    m_str = f"[M.  {s}]"
                 p_str = f"[{entry['part']}]"
                 line = f"{p_str:<5} {m_str:<15} {entry['text']}"
                 f.write(line + "\n")
@@ -95,22 +137,34 @@ class ScoreProcessor:
     def _collect_grand_staff_measures(self, stream_obj):
         all_measures_by_part = []
         for p in stream_obj.parts:
-            all_measures_by_part.append(list(p.getElementsByClass('Measure')))
-        if not all_measures_by_part: return []
+            all_measures_by_part.append(list(p.getElementsByClass("Measure")))
+        if not all_measures_by_part:
+            return []
         max_len = max(len(m_list) for m_list in all_measures_by_part)
         system_measures = []
         current_ts = None
         current_ks = None
         for i in range(max_len):
-            sys_m = {'index': i, 'number': 0, 'time_sig': None, 'key_sig': None, 'duration': 0.0, 'all_notes': [], 'all_dynamics': []}
+            sys_m = {
+                "index": i,
+                "number": 0,
+                "time_sig": None,
+                "key_sig": None,
+                "duration": 0.0,
+                "all_notes": [],
+                "all_dynamics": [],
+            }
             current_measures_list = []
             for p_idx, m_list in enumerate(all_measures_by_part):
                 if i < len(m_list):
                     m = m_list[i]
                     current_measures_list.append(m)
-                    if sys_m['number'] == 0: sys_m['number'] = self._safe_measure_number(m.number)
-                    if m.timeSignature: current_ts = copy.deepcopy(m.timeSignature)
-                    if m.keySignature: current_ks = copy.deepcopy(m.keySignature)
+                    if sys_m["number"] == 0:
+                        sys_m["number"] = self._safe_measure_number(m.number)
+                    if m.timeSignature:
+                        current_ts = copy.deepcopy(m.timeSignature)
+                    if m.keySignature:
+                        current_ks = copy.deepcopy(m.keySignature)
                     for v in m.voices:
                         v_id = v.id
                         for n in v.notesAndRests:
@@ -118,44 +172,62 @@ class ScoreProcessor:
                             n.q_staff_id = s_id
                             n.q_voice_id = str(v_id)
                     for el in m.elements:
-                        if isinstance(el, (music21.note.GeneralNote, music21.note.Rest)):
-                            if not hasattr(el, 'q_voice_id'):
+                        if isinstance(
+                            el, (music21.note.GeneralNote, music21.note.Rest)
+                        ):
+                            if not hasattr(el, "q_voice_id"):
                                 v_id_fallback = "1"
-                                if hasattr(el, 'voice'):
-                                    val = el.voice.id if hasattr(el.voice, 'id') else el.voice
-                                    if val: v_id_fallback = str(val)
-                                s_id = self._detect_staff_context(el, v_id_fallback, p_idx)
+                                if hasattr(el, "voice"):
+                                    val = (
+                                        el.voice.id
+                                        if hasattr(el.voice, "id")
+                                        else el.voice
+                                    )
+                                    if val:
+                                        v_id_fallback = str(val)
+                                s_id = self._detect_staff_context(
+                                    el, v_id_fallback, p_idx
+                                )
                                 el.q_staff_id = s_id
                                 el.q_voice_id = v_id_fallback
                         if isinstance(el, music21.dynamics.Dynamic):
                             s_id = self._detect_staff_context(el, "1", p_idx)
                             el.q_staff_id = s_id
-                            el.q_placement = 'unknown'
-                            if hasattr(el, 'style') and el.style:
+                            el.q_placement = "unknown"
+                            if hasattr(el, "style") and el.style:
                                 try:
-                                    if getattr(el.style, 'placement', None): el.q_placement = el.style.placement
-                                except: pass
-                            if el.q_placement == 'unknown' and hasattr(el, 'placement'): el.q_placement = el.placement
+                                    if getattr(el.style, "placement", None):
+                                        el.q_placement = el.style.placement
+                                except:
+                                    pass
+                            if el.q_placement == "unknown" and hasattr(el, "placement"):
+                                el.q_placement = el.placement
             if current_ts:
-                sys_m['time_sig'] = current_ts
+                sys_m["time_sig"] = current_ts
                 ts_dur = current_ts.barDuration.quarterLength
-                has_content, content_end = self._analyze_measure_content(current_measures_list)
-                if not has_content: sys_m['duration'] = 0.0
-                elif content_end < (ts_dur - 0.125): sys_m['duration'] = content_end
-                else: sys_m['duration'] = ts_dur
-            if current_ks: sys_m['key_sig'] = current_ks
+                has_content, content_end = self._analyze_measure_content(
+                    current_measures_list
+                )
+                if not has_content:
+                    sys_m["duration"] = 0.0
+                elif content_end < (ts_dur - 0.125):
+                    sys_m["duration"] = content_end
+                else:
+                    sys_m["duration"] = ts_dur
+            if current_ks:
+                sys_m["key_sig"] = current_ks
             for p_idx, m_list in enumerate(all_measures_by_part):
                 if i < len(m_list):
                     m = m_list[i]
                     flat_stream = m.flatten()
                     for n in flat_stream.notesAndRests:
-                        s_id = getattr(n, 'q_staff_id', 1)
-                        v_id = getattr(n, 'q_voice_id', "1")
-                        sys_m['all_notes'].append((n, n.offset, s_id, v_id))
-                    for d in flat_stream.getElementsByClass('Dynamic'):
-                        s_id = getattr(d, 'q_staff_id', 1)
-                        placement = getattr(d, 'q_placement', 'unknown')
-                        sys_m['all_dynamics'].append((d, d.offset, s_id, placement))
+                        s_id = getattr(n, "q_staff_id", 1)
+                        v_id = getattr(n, "q_voice_id", "1")
+                        sys_m["all_notes"].append((n, n.offset, s_id, v_id))
+                    for d in flat_stream.getElementsByClass("Dynamic"):
+                        s_id = getattr(d, "q_staff_id", 1)
+                        placement = getattr(d, "q_placement", "unknown")
+                        sys_m["all_dynamics"].append((d, d.offset, s_id, placement))
             system_measures.append(sys_m)
         return system_measures
 
@@ -165,77 +237,109 @@ class ScoreProcessor:
         for m in measures_list:
             for el in m.flatten().notesAndRests:
                 is_hidden = False
-                if hasattr(el, 'printObject') and el.printObject is False: is_hidden = True
-                if hasattr(el, 'style') and getattr(el.style, 'hideObjectOnPrint', False): is_hidden = True
+                if hasattr(el, "printObject") and el.printObject is False:
+                    is_hidden = True
+                if hasattr(el, "style") and getattr(
+                    el.style, "hideObjectOnPrint", False
+                ):
+                    is_hidden = True
                 if not is_hidden:
                     has_printable_content = True
                     end_pos = el.offset + el.duration.quarterLength
-                    if end_pos > max_end: max_end = end_pos
+                    if end_pos > max_end:
+                        max_end = end_pos
         return has_printable_content, max_end
 
     def _detect_staff_context(self, el, voice_id, part_index):
-        if hasattr(el, 'style') and el.style:
-            try: 
-                if el.style.staff: return int(el.style.staff)
-            except: pass
-        if hasattr(el, 'staff') and el.staff:
-            try: return int(el.staff)
-            except: pass
+        if hasattr(el, "style") and el.style:
+            try:
+                if el.style.staff:
+                    return int(el.style.staff)
+            except:
+                pass
+        if hasattr(el, "staff") and el.staff:
+            try:
+                return int(el.staff)
+            except:
+                pass
         digits = "".join(filter(str.isdigit, str(voice_id)))
-        if digits and int(digits) >= 5: return 2
-        if part_index == 1: return 2
+        if digits and int(digits) >= 5:
+            return 2
+        if part_index == 1:
+            return 2
         return 1
 
     def _generate_literal_midi(self):
         output_score = music21.stream.Score()
-        parts = {'S': music21.stream.Part(), 'A': music21.stream.Part(), 
-                 'T': music21.stream.Part(), 'B': music21.stream.Part()}
-        for role, p in parts.items(): p.id = role
+        parts = {
+            "S": music21.stream.Part(),
+            "A": music21.stream.Part(),
+            "T": music21.stream.Part(),
+            "B": music21.stream.Part(),
+        }
+        for role, p in parts.items():
+            p.id = role
         system_measures = self._collect_grand_staff_measures(self.literal_stream)
-        if not system_measures: return None
+        if not system_measures:
+            return None
         padding_duration = self._calculate_padding(self.literal_stream)
         measure_num_shift = 1 if padding_duration > 0 else 0
         for sys_m in system_measures:
-            voice_map = self._map_system_notes(sys_m['all_notes'], bake_tremolos=True)
+            voice_map = self._map_system_notes(sys_m["all_notes"], bake_tremolos=True)
             for role, note_data in voice_map.items():
                 new_measure = music21.stream.Measure()
-                new_measure.number = sys_m['number'] + measure_num_shift
-                if sys_m['time_sig']:
-                    new_measure.timeSignature = copy.deepcopy(sys_m['time_sig'])
-                    new_measure.duration = music21.duration.Duration(sys_m['duration'])
-                if sys_m['key_sig']:
-                    ks = copy.deepcopy(sys_m['key_sig'])
-                    if ks.sharps is None: ks.sharps = 0
+                new_measure.number = sys_m["number"] + measure_num_shift
+                if sys_m["time_sig"]:
+                    new_measure.timeSignature = copy.deepcopy(sys_m["time_sig"])
+                    new_measure.duration = music21.duration.Duration(sys_m["duration"])
+                if sys_m["key_sig"]:
+                    ks = copy.deepcopy(sys_m["key_sig"])
+                    if ks.sharps is None:
+                        ks.sharps = 0
                     new_measure.keySignature = ks
                 note_shift = 0.0
-                if sys_m['index'] == 0 and padding_duration > 0:
+                if sys_m["index"] == 0 and padding_duration > 0:
                     pad_rest = music21.note.Rest()
                     pad_rest.duration.quarterLength = padding_duration
                     new_measure.insert(0.0, pad_rest)
                     note_shift = padding_duration
                     if new_measure.timeSignature:
-                        new_measure.duration = music21.duration.Duration(new_measure.timeSignature.barDuration.quarterLength)
+                        new_measure.duration = music21.duration.Duration(
+                            new_measure.timeSignature.barDuration.quarterLength
+                        )
                 for note, original_offset in note_data:
-                    if note.duration.isGrace: continue
+                    if note.duration.isGrace:
+                        continue
                     final_note = copy.deepcopy(note)
                     new_measure.insert(original_offset + note_shift, final_note)
                 parts[role].append(new_measure)
-        for role in ['S', 'A', 'T', 'B']:
+        for role in ["S", "A", "T", "B"]:
             output_score.insert(0, parts[role])
         return output_score
 
     def _generate_melody_draft(self):
         output_score = music21.stream.Score()
-        parts = {'S': music21.stream.Part(), 'A': music21.stream.Part(), 
-                 'T': music21.stream.Part(), 'B': music21.stream.Part()}
-        for role, p in parts.items(): p.id = role
+        parts = {
+            "S": music21.stream.Part(),
+            "A": music21.stream.Part(),
+            "T": music21.stream.Part(),
+            "B": music21.stream.Part(),
+        }
+        for role, p in parts.items():
+            p.id = role
         system_measures = self._collect_grand_staff_measures(self.melody_stream)
         start_states = self._calculate_start_volumes(system_measures)
         tenuto_counts = self._precalculate_tenuto_counts(system_measures)
         padding_duration = self._calculate_padding(self.melody_stream)
         measure_num_shift = 1 if padding_duration > 0 else 0
-        exclusion_state = {'active': False, 'voice_id': None, 'counter': 0, 'last_voice_set': set(), 
-                           'pitch_history': {}, 'excluded_voice_prev_median': None}
+        exclusion_state = {
+            "active": False,
+            "voice_id": None,
+            "counter": 0,
+            "last_voice_set": set(),
+            "pitch_history": {},
+            "excluded_voice_prev_median": None,
+        }
         exclusion_start_measure = None
         exclusion_start_vals = (0, 0)
         has_seen_upper_dynamic = False
@@ -243,47 +347,64 @@ class ScoreProcessor:
         for i, sys_m in enumerate(system_measures):
             current_upper_voices = set()
             voice_pitches = {}
-            for n, _, s_id, v_id in sys_m['all_notes']:
+            for n, _, s_id, v_id in sys_m["all_notes"]:
                 if s_id == 1:
                     current_upper_voices.add(str(v_id))
-                    if str(v_id) not in voice_pitches: voice_pitches[str(v_id)] = []
-                    if n.isChord: voice_pitches[str(v_id)].append(max(p.ps for p in n.pitches))
-                    elif n.isNote: voice_pitches[str(v_id)].append(n.pitch.ps)
+                    if str(v_id) not in voice_pitches:
+                        voice_pitches[str(v_id)] = []
+                    if n.isChord:
+                        voice_pitches[str(v_id)].append(max(p.ps for p in n.pitches))
+                    elif n.isNote:
+                        voice_pitches[str(v_id)].append(n.pitch.ps)
             current_medians = {}
             for vid in current_upper_voices:
                 pitches = voice_pitches.get(vid, [])
                 if pitches:
                     median = statistics.median(pitches)
                     current_medians[vid] = median
-                    exclusion_state['pitch_history'][vid] = median 
-                else: current_medians[vid] = exclusion_state['pitch_history'].get(vid, -1)
+                    exclusion_state["pitch_history"][vid] = median
+                else:
+                    current_medians[vid] = exclusion_state["pitch_history"].get(vid, -1)
             target_voice_id = None
             target_median = -1
-            sorted_by_pitch = sorted(current_medians.items(), key=lambda x: x[1], reverse=True)
+            sorted_by_pitch = sorted(
+                current_medians.items(), key=lambda x: x[1], reverse=True
+            )
             if sorted_by_pitch:
                 target_voice_id = sorted_by_pitch[0][0]
                 target_median = sorted_by_pitch[0][1]
-            measure_has_upper_dyn = any(d_sid == 1 for _, _, d_sid, _ in sys_m['all_dynamics'])
+            measure_has_upper_dyn = any(
+                d_sid == 1 for _, _, d_sid, _ in sys_m["all_dynamics"]
+            )
 
             timeline = []
-            for dyn, offset, s_id, placement in sys_m['all_dynamics']: timeline.append((offset, 0, (dyn, s_id, placement)))
-            for note, offset, s_id, v_id in sys_m['all_notes']: timeline.append((offset, 1, (note, s_id, v_id)))
+            for dyn, offset, s_id, placement in sys_m["all_dynamics"]:
+                timeline.append((offset, 0, (dyn, s_id, placement)))
+            for note, offset, s_id, v_id in sys_m["all_notes"]:
+                timeline.append((offset, 1, (note, s_id, v_id)))
             timeline.sort(key=lambda x: (x[0], x[1]))
-            
+
             curr_u, curr_l = start_states[i]
-            upper_ever_dominant = (curr_u >= curr_l)
-            processed_notes = [] 
-            if current_upper_voices != exclusion_state['last_voice_set']:
-                if exclusion_state['active']:
+            upper_ever_dominant = curr_u >= curr_l
+            processed_notes = []
+            if current_upper_voices != exclusion_state["last_voice_set"]:
+                if exclusion_state["active"]:
                     su, sl = exclusion_start_vals
                     msg = f"Dynamic Exclusion (U={su} < L={sl}) -> (Voice structure change)"
-                    self.log_data.append({'start_m': exclusion_start_measure, 'end_m': sys_m['number']-1, 'part': 'S', 'text': msg})
-                    exclusion_state['active'] = False
-                    exclusion_state['voice_id'] = None
-                    exclusion_state['excluded_voice_prev_median'] = None
+                    self.log_data.append(
+                        {
+                            "start_m": exclusion_start_measure,
+                            "end_m": sys_m["number"] - 1,
+                            "part": "S",
+                            "text": msg,
+                        }
+                    )
+                    exclusion_state["active"] = False
+                    exclusion_state["voice_id"] = None
+                    exclusion_state["excluded_voice_prev_median"] = None
                     exclusion_start_measure = None
-            exclusion_state['last_voice_set'] = current_upper_voices
-            
+            exclusion_state["last_voice_set"] = current_upper_voices
+
             for idx, event in enumerate(timeline):
                 offset, etype, data = event
                 if etype == 0:
@@ -291,96 +412,154 @@ class ScoreProcessor:
                     val = self.DYNAMICS_MAP.get(dyn_obj.value, 64)
                     if s_id == 1:
                         has_seen_upper_dynamic = True
-                        if placement == 'above': curr_u = val
-                        else: 
+                        if placement == "above":
+                            curr_u = val
+                        else:
                             overtake_val = None
                             for k in range(idx + 1, len(timeline)):
                                 f_off, f_type, f_data = timeline[k]
-                                if f_off > offset + 0.25: break
+                                if f_off > offset + 0.25:
+                                    break
                                 if f_type == 0:
                                     _, f_sid, f_place = f_data
-                                    if f_sid == 1 and f_place == 'above':
-                                        overtake_val = self.DYNAMICS_MAP.get(timeline[k][2][0].value, 64)
+                                    if f_sid == 1 and f_place == "above":
+                                        overtake_val = self.DYNAMICS_MAP.get(
+                                            timeline[k][2][0].value, 64
+                                        )
                                         break
                             curr_u = overtake_val if overtake_val else val
-                            curr_l = val 
+                            curr_l = val
                     elif s_id == 2:
                         curr_l = val
-                        if not measure_has_upper_dyn: curr_u = val 
-                    if curr_u >= curr_l: upper_ever_dominant = True
-                    if exclusion_state['active']:
-                        ex_vid = str(exclusion_state['voice_id'])
+                        if not measure_has_upper_dyn:
+                            curr_u = val
+                    if curr_u >= curr_l:
+                        upper_ever_dominant = True
+                    if exclusion_state["active"]:
+                        ex_vid = str(exclusion_state["voice_id"])
                         curr_med_check = current_medians.get(ex_vid, -1)
-                        prev_med_check = exclusion_state['excluded_voice_prev_median']
+                        prev_med_check = exclusion_state["excluded_voice_prev_median"]
                         if curr_med_check > -1 and prev_med_check is not None:
                             if abs(curr_med_check - prev_med_check) >= 12:
                                 su, sl = exclusion_start_vals
                                 msg = f"Dynamic Exclusion (U={su} < L={sl}) -> (Octave Jump)"
-                                self.log_data.append({'start_m': exclusion_start_measure, 'end_m': sys_m['number'], 'part': 'S', 'text': msg})
-                                exclusion_state['active'] = False
-                                exclusion_state['voice_id'] = None
+                                self.log_data.append(
+                                    {
+                                        "start_m": exclusion_start_measure,
+                                        "end_m": sys_m["number"],
+                                        "part": "S",
+                                        "text": msg,
+                                    }
+                                )
+                                exclusion_state["active"] = False
+                                exclusion_state["voice_id"] = None
                                 exclusion_start_measure = None
                     if self.ENABLE_DYNAMIC_EXCLUSION:
-                        if curr_u >= curr_l and exclusion_state['active']:
+                        if curr_u >= curr_l and exclusion_state["active"]:
                             su, sl = exclusion_start_vals
                             msg = f"Dynamic Exclusion (U={su} < L={sl}) -> (Volumes Equalized)"
-                            self.log_data.append({'start_m': exclusion_start_measure, 'end_m': sys_m['number'], 'part': 'S', 'text': msg})
-                            exclusion_state['active'] = False
-                            exclusion_state['voice_id'] = None
+                            self.log_data.append(
+                                {
+                                    "start_m": exclusion_start_measure,
+                                    "end_m": sys_m["number"],
+                                    "part": "S",
+                                    "text": msg,
+                                }
+                            )
+                            exclusion_state["active"] = False
+                            exclusion_state["voice_id"] = None
                             exclusion_start_measure = None
                         if curr_u < curr_l:
-                            if not exclusion_state['active'] and has_seen_upper_dynamic and target_voice_id:
-                                exclusion_state['active'] = True
-                                exclusion_state['voice_id'] = target_voice_id
-                                exclusion_state['excluded_voice_prev_median'] = target_median
-                                exclusion_start_measure = sys_m['number']
+                            if (
+                                not exclusion_state["active"]
+                                and has_seen_upper_dynamic
+                                and target_voice_id
+                            ):
+                                exclusion_state["active"] = True
+                                exclusion_state["voice_id"] = target_voice_id
+                                exclusion_state["excluded_voice_prev_median"] = (
+                                    target_median
+                                )
+                                exclusion_start_measure = sys_m["number"]
                                 exclusion_start_vals = (curr_u, curr_l)
                 elif etype == 1:
                     note_obj, s_id, v_id = data
                     keep = True
-                    if exclusion_state['active'] and s_id == 1 and str(v_id) == str(exclusion_state['voice_id']): keep = False
-                    if keep: processed_notes.append((note_obj, offset, s_id, v_id))
+                    if (
+                        exclusion_state["active"]
+                        and s_id == 1
+                        and str(v_id) == str(exclusion_state["voice_id"])
+                    ):
+                        keep = False
+                    if keep:
+                        processed_notes.append((note_obj, offset, s_id, v_id))
 
-            measure_content = {'S': [], 'A': [], 'T': [], 'B': []}
+            measure_content = {"S": [], "A": [], "T": [], "B": []}
             voice_map = self._map_system_notes(processed_notes, bake_tremolos=False)
             is_ambiguous = self._check_ambiguity_lookahead(system_measures, i)
             if is_ambiguous:
                 marker = music21.expressions.TextExpression("CHECK HERE")
-                measure_content['S'].append((marker, 0.0))
-                for role, notes in voice_map.items(): measure_content[role].extend(notes)
+                measure_content["S"].append((marker, 0.0))
+                for role, notes in voice_map.items():
+                    measure_content[role].extend(notes)
             else:
                 target_staff = 1
-                should_swap = (curr_u < curr_l)
-                if upper_ever_dominant: should_swap = False
-                if self.ENABLE_DYNAMIC_EXCLUSION and should_swap: target_staff = 2
-                
-                if target_staff == 1: measure_content['S'] = voice_map['S']
-                else: measure_content['T'] = voice_map['T']
-                
-                count_curr = tenuto_counts[i]
-                count_prev = tenuto_counts[i-1] if i > 0 else 0
-                count_next = tenuto_counts[i+1] if i < len(tenuto_counts)-1 else 0
-                lower_protected = False
-                if count_curr >= self.LOWER_TENUTO_THRESHOLD: lower_protected = True
-                elif count_curr > 1 and (count_prev >= self.LOWER_TENUTO_THRESHOLD or count_next >= self.LOWER_TENUTO_THRESHOLD): lower_protected = True
-                if (lower_protected or self.SAFE_MODE_PRESERVE_LOWER) and target_staff == 1:
-                    for note, off in voice_map['T']:
-                        keep_note = False
-                        if self.SAFE_MODE_PRESERVE_LOWER: keep_note = True
-                        elif hasattr(note, 'articulations') and any(isinstance(a, music21.articulations.Tenuto) for a in note.articulations): keep_note = True
-                        if keep_note: measure_content['T'].append((note, off))
-                    if lower_protected and not self.SAFE_MODE_PRESERVE_LOWER:
-                        self.log_data.append({'start_m': sys_m['number'], 'end_m': sys_m['number'], 'part': 'T', 'text': f"Safe Mode: Merged Lower Staff Tenutos (Count={count_curr})"})
+                should_swap = curr_u < curr_l
+                if upper_ever_dominant:
+                    should_swap = False
+                if self.ENABLE_DYNAMIC_EXCLUSION and should_swap:
+                    target_staff = 2
 
-            for role in ['S', 'A', 'T', 'B']:
+                if target_staff == 1:
+                    measure_content["S"] = voice_map["S"]
+                else:
+                    measure_content["T"] = voice_map["T"]
+
+                count_curr = tenuto_counts[i]
+                count_prev = tenuto_counts[i - 1] if i > 0 else 0
+                count_next = tenuto_counts[i + 1] if i < len(tenuto_counts) - 1 else 0
+                lower_protected = False
+                if count_curr >= self.LOWER_TENUTO_THRESHOLD:
+                    lower_protected = True
+                elif count_curr > 1 and (
+                    count_prev >= self.LOWER_TENUTO_THRESHOLD
+                    or count_next >= self.LOWER_TENUTO_THRESHOLD
+                ):
+                    lower_protected = True
+                if (
+                    lower_protected or self.SAFE_MODE_PRESERVE_LOWER
+                ) and target_staff == 1:
+                    for note, off in voice_map["T"]:
+                        keep_note = False
+                        if self.SAFE_MODE_PRESERVE_LOWER:
+                            keep_note = True
+                        elif hasattr(note, "articulations") and any(
+                            isinstance(a, music21.articulations.Tenuto)
+                            for a in note.articulations
+                        ):
+                            keep_note = True
+                        if keep_note:
+                            measure_content["T"].append((note, off))
+                    if lower_protected and not self.SAFE_MODE_PRESERVE_LOWER:
+                        self.log_data.append(
+                            {
+                                "start_m": sys_m["number"],
+                                "end_m": sys_m["number"],
+                                "part": "T",
+                                "text": f"Safe Mode: Merged Lower Staff Tenutos (Count={count_curr})",
+                            }
+                        )
+
+            for role in ["S", "A", "T", "B"]:
                 new_measure = music21.stream.Measure()
-                new_measure.number = sys_m['number'] + measure_num_shift
-                if sys_m['time_sig']:
-                    new_measure.timeSignature = copy.deepcopy(sys_m['time_sig'])
-                    new_measure.duration = music21.duration.Duration(sys_m['duration'])
-                if sys_m['key_sig']:
-                    ks = copy.deepcopy(sys_m['key_sig'])
-                    if ks.sharps is None: ks.sharps = 0
+                new_measure.number = sys_m["number"] + measure_num_shift
+                if sys_m["time_sig"]:
+                    new_measure.timeSignature = copy.deepcopy(sys_m["time_sig"])
+                    new_measure.duration = music21.duration.Duration(sys_m["duration"])
+                if sys_m["key_sig"]:
+                    ks = copy.deepcopy(sys_m["key_sig"])
+                    if ks.sharps is None:
+                        ks.sharps = 0
                     new_measure.keySignature = ks
                 note_shift = 0.0
                 if i == 0 and padding_duration > 0:
@@ -389,20 +568,30 @@ class ScoreProcessor:
                     new_measure.insert(0.0, pad_rest)
                     note_shift = padding_duration
                     if new_measure.timeSignature:
-                        new_measure.duration = music21.duration.Duration(new_measure.timeSignature.barDuration.quarterLength)
+                        new_measure.duration = music21.duration.Duration(
+                            new_measure.timeSignature.barDuration.quarterLength
+                        )
                 for item, original_offset in measure_content[role]:
                     if isinstance(item, music21.expressions.TextExpression):
-                         new_measure.insert(original_offset + note_shift, item)
-                         continue
-                    if item.duration.isGrace: continue
+                        new_measure.insert(original_offset + note_shift, item)
+                        continue
+                    if item.duration.isGrace:
+                        continue
                     cleaned = self._clean_melody_note(item)
                     new_measure.insert(original_offset + note_shift, cleaned)
                 parts[role].append(new_measure)
-        if exclusion_state['active']:
-             su, sl = exclusion_start_vals
-             msg = f"Dynamic Exclusion (U={su} < L={sl}) -> (End of Score)"
-             self.log_data.append({'start_m': exclusion_start_measure, 'end_m': system_measures[-1]['number'], 'part': 'S', 'text': msg})
-        for role in ['S', 'A', 'T', 'B']:
+        if exclusion_state["active"]:
+            su, sl = exclusion_start_vals
+            msg = f"Dynamic Exclusion (U={su} < L={sl}) -> (End of Score)"
+            self.log_data.append(
+                {
+                    "start_m": exclusion_start_measure,
+                    "end_m": system_measures[-1]["number"],
+                    "part": "S",
+                    "text": msg,
+                }
+            )
+        for role in ["S", "A", "T", "B"]:
             output_score.insert(0, parts[role])
         return output_score
 
@@ -410,21 +599,29 @@ class ScoreProcessor:
         counts = []
         for sys_m in system_measures:
             staff_groups = {2: {}}
-            for n, _, s_id, v_id in sys_m['all_notes']:
+            for n, _, s_id, v_id in sys_m["all_notes"]:
                 if s_id == 2:
-                    if v_id not in staff_groups[2]: staff_groups[2][v_id] = []
+                    if v_id not in staff_groups[2]:
+                        staff_groups[2][v_id] = []
                     staff_groups[2][v_id].append(n)
             main_voice_notes = []
             if staff_groups[2]:
                 v_ids = list(staff_groups[2].keys())
+
                 def sort_key(k):
-                    try: return int(''.join(filter(str.isdigit, str(k))) or 999)
-                    except: return 999
+                    try:
+                        return int("".join(filter(str.isdigit, str(k))) or 999)
+                    except:
+                        return 999
+
                 v_ids.sort(key=sort_key)
                 main_voice_notes = staff_groups[2][v_ids[0]]
             c = 0
             for n in main_voice_notes:
-                if hasattr(n, 'articulations') and any(isinstance(a, music21.articulations.Tenuto) for a in n.articulations): c += 1
+                if hasattr(n, "articulations") and any(
+                    isinstance(a, music21.articulations.Tenuto) for a in n.articulations
+                ):
+                    c += 1
             counts.append(c)
         return counts
 
@@ -437,27 +634,35 @@ class ScoreProcessor:
         sim_has_seen_upper = False
         for sys_m in system_measures:
             start_states.append((curr_u, curr_l))
-            sys_m['all_dynamics'].sort(key=lambda x: x[1])
-            measure_has_upper = any(d_sid == 1 for _, _, d_sid, _ in sys_m['all_dynamics'])
-            for dyn, offset, s_id, placement in sys_m['all_dynamics']:
+            sys_m["all_dynamics"].sort(key=lambda x: x[1])
+            measure_has_upper = any(
+                d_sid == 1 for _, _, d_sid, _ in sys_m["all_dynamics"]
+            )
+            for dyn, offset, s_id, placement in sys_m["all_dynamics"]:
                 val = self.DYNAMICS_MAP.get(dyn.value, 64)
                 if s_id == 1:
                     sim_has_seen_upper = True
-                    if placement == 'above': curr_u = val
-                    else: 
+                    if placement == "above":
+                        curr_u = val
+                    else:
                         curr_u = val
                         curr_l = val
                 elif s_id == 2:
                     curr_l = val
-                    if not measure_has_upper: curr_u = val 
+                    if not measure_has_upper:
+                        curr_u = val
             trigger = (curr_u < curr_l) and sim_has_seen_upper
             if trigger:
-                 exclusion_active = True
-                 exclusion_counter += 1
+                exclusion_active = True
+                exclusion_counter += 1
             else:
-                 exclusion_active = False
-                 exclusion_counter = 0
-            if self.ENABLE_DYNAMIC_EXCLUSION and exclusion_active and exclusion_counter >= self.DYNAMIC_EXCLUSION_LIMIT:
+                exclusion_active = False
+                exclusion_counter = 0
+            if (
+                self.ENABLE_DYNAMIC_EXCLUSION
+                and exclusion_active
+                and exclusion_counter >= self.DYNAMIC_EXCLUSION_LIMIT
+            ):
                 reset_val = min(curr_u, curr_l)
                 curr_u = reset_val
                 curr_l = reset_val
@@ -467,10 +672,10 @@ class ScoreProcessor:
 
     def _check_ambiguity_lookahead(self, system_measures, current_idx):
         end_idx = min(current_idx + self.AMBIGUITY_LOOKAHEAD + 1, len(system_measures))
-        window = system_measures[current_idx : end_idx]
+        window = system_measures[current_idx:end_idx]
         for sys_m in window:
             staff_voices = {1: set(), 2: set()}
-            for _, _, s_id, v_id in sys_m['all_notes']:
+            for _, _, s_id, v_id in sys_m["all_notes"]:
                 staff_voices[s_id].add(v_id)
             if len(staff_voices[1]) > 1 or len(staff_voices[2]) > 1:
                 return True
@@ -479,16 +684,23 @@ class ScoreProcessor:
     def _map_system_notes(self, all_notes, bake_tremolos=False):
         staff_groups = {1: {}, 2: {}}
         for n, offset, s_id, v_id in all_notes:
-            if s_id not in staff_groups: s_id = 1
-            if v_id not in staff_groups[s_id]: staff_groups[s_id][v_id] = []
+            if s_id not in staff_groups:
+                s_id = 1
+            if v_id not in staff_groups[s_id]:
+                staff_groups[s_id][v_id] = []
             staff_groups[s_id][v_id].append((n, offset))
-        output = {'S': [], 'A': [], 'T': [], 'B': []}
-        for s_num, role_main, role_extra in [(1, 'S', 'A'), (2, 'T', 'B')]:
+        output = {"S": [], "A": [], "T": [], "B": []}
+        for s_num, role_main, role_extra in [(1, "S", "A"), (2, "T", "B")]:
             v_ids = list(staff_groups[s_num].keys())
-            if not v_ids: continue
+            if not v_ids:
+                continue
+
             def sort_key(k):
-                try: return int(''.join(filter(str.isdigit, str(k))) or 999)
-                except: return 999
+                try:
+                    return int("".join(filter(str.isdigit, str(k))) or 999)
+                except:
+                    return 999
+
             v_ids.sort(key=sort_key)
             main_id = v_ids[0]
             output[role_main].extend(staff_groups[s_num][main_id])
@@ -497,21 +709,28 @@ class ScoreProcessor:
         if bake_tremolos:
             for key in output:
                 raw_tuples = output[key]
-                if not raw_tuples: continue
+                if not raw_tuples:
+                    continue
                 temp_stream = music21.stream.Stream()
-                for n, off in raw_tuples: temp_stream.insert(off, n)
+                for n, off in raw_tuples:
+                    temp_stream.insert(off, n)
                 try:
                     expanded = temp_stream.expandTremolos()
                     new_tuples = []
-                    for n in expanded.notesAndRests: new_tuples.append((n, n.offset))
+                    for n in expanded.notesAndRests:
+                        new_tuples.append((n, n.offset))
                     output[key] = new_tuples
-                except: output[key] = raw_tuples
+                except:
+                    output[key] = raw_tuples
         return output
 
     def _safe_measure_number(self, val):
-        if val is None: return 0
-        try: return int(val)
-        except: return int(''.join(filter(str.isdigit, str(val))) or 0)
+        if val is None:
+            return 0
+        try:
+            return int(val)
+        except:
+            return int("".join(filter(str.isdigit, str(val))) or 0)
 
     def _clean_melody_note(self, element):
         new_note = None
@@ -522,24 +741,33 @@ class ScoreProcessor:
             new_note.duration = element.duration
         elif isinstance(element, music21.note.Note):
             new_note = copy.deepcopy(element)
-        else: return copy.deepcopy(element)
-        if hasattr(element, 'tie') and element.tie is not None:
+        else:
+            return copy.deepcopy(element)
+        if hasattr(element, "tie") and element.tie is not None:
             new_note.tie = copy.deepcopy(element.tie)
         return new_note
 
     def _calculate_padding(self, stream):
         try:
             parts = stream.parts
-            if not parts: return 0.0
-            measures = parts[0].getElementsByClass('Measure')
-            if not measures: return 0.0
+            if not parts:
+                return 0.0
+            measures = parts[0].getElementsByClass("Measure")
+            if not measures:
+                return 0.0
             m1 = measures[0]
-            ts = m1.timeSignature or stream.recurse().getElementsByClass('TimeSignature')[0]
-            if not ts or not m1.duration: return 0.0
+            ts = (
+                m1.timeSignature
+                or stream.recurse().getElementsByClass("TimeSignature")[0]
+            )
+            if not ts or not m1.duration:
+                return 0.0
             bar_dur = ts.barDuration.quarterLength
             current_dur = m1.duration.quarterLength
-            if bar_dur is None or current_dur is None: return 0.0
+            if bar_dur is None or current_dur is None:
+                return 0.0
             if current_dur < bar_dur and current_dur > 0:
                 return float(bar_dur - current_dur)
             return 0.0
-        except: return 0.0
+        except:
+            return 0.0
