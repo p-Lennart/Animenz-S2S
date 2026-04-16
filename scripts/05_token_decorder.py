@@ -1,67 +1,131 @@
 import os
 import json
-from pathlib import Path
 from miditok import REMI, TokSequence
 
 # --- CONFIGURATION ---
 TOKEN_DIR = "./../tokenized_dataset"
 OUTPUT_DIR = "./../decoded_midi"
+POSITIONS_PER_BEAT = 8  # Must match your tokenization config
 
 
-def decode_literal_dataset():
+def decode_dataset():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # 1. Initialize tokenizer directly from the saved state!
     config_path = os.path.join(TOKEN_DIR, "tokenizer_config.json")
     if not os.path.exists(config_path):
-        print(f"CRITICAL: Could not find {config_path}. Did you run the encoder?")
+        print(f"CRITICAL: Could not find {config_path}.")
         return
 
     tokenizer = REMI(params=config_path)
+
     print(f"Loaded tokenizer state with vocab size: {len(tokenizer.vocab)}")
-    print("Decoding Literal JSON files to MIDI...")
+
+    # Dynamically find the positions per beat for the first beat range (usually 0)
+    base_beat_range = next(
+        key for key in tokenizer.config.beat_res.keys() if key[0] == 0
+    )
+    POSITIONS_PER_BEAT = tokenizer.config.beat_res[base_beat_range]
+    print(f"Extracted base resolution: {POSITIONS_PER_BEAT}")
+
+    print("Decoding dataset to MIDI and TSV...\n")
 
     for root, _, files in os.walk(TOKEN_DIR):
         for f in files:
-            if f.endswith("_LITERAL.json"):
-                json_path = os.path.join(root, f)
-                score_name = f.replace("_LITERAL.json", "")
+            if not f.endswith(".json") or f == "tokenizer_config.json":
+                continue
 
-                try:
-                    # 2. Load the IDs
-                    with open(json_path, "r", encoding="utf-8") as jf:
-                        data = json.load(jf)
-                        ids = data.get("ids", [])
+            json_path = os.path.join(root, f)
+            score_name = f.replace("_LITERAL.json", "").replace(
+                "_MELODY_CHORDS.json", ""
+            )
+            song_out_dir = os.path.join(OUTPUT_DIR, score_name)
+            os.makedirs(song_out_dir, exist_ok=True)
 
-                    if not ids:
-                        print(f"  [WARNING] No IDs found in {f}, skipping.")
-                        continue
+            try:
+                with open(json_path, "r", encoding="utf-8") as jf:
+                    data = json.load(jf)
+                    ids = data.get("ids", [])
 
-                    # 3. Decode directly back to a symusic.Score object
-                    # Explicitly wrap the IDs to lock in the 1D dimensionality
+                if not ids:
+                    continue
+
+                # 1. LITERAL DECODING
+                if "LITERAL" in f:
                     seq = TokSequence(ids=ids)
-
-                    # Pass it as a list (since a MIDI file is a list of tracks)
                     decoded_score = tokenizer.decode([seq])
-
-                    # 4. Create specific output subdirectory
-                    song_out_dir = os.path.join(OUTPUT_DIR, score_name)
-                    os.makedirs(song_out_dir, exist_ok=True)
-
-                    # 5. Save the MIDI
                     out_midi_path = os.path.join(
                         song_out_dir, f"{score_name}_LITERAL.mid"
                     )
                     decoded_score.dump_midi(out_midi_path)
+                    print(f"Decoded Literal: {score_name}")
 
-                    print(f"Successfully decoded: {score_name}")
+                # 2. MELODY + CHORD DECODING
+                elif "MELODY_CHORDS" in f:
+                    # Load IDs and convert to string tokens
+                    seq = TokSequence(ids=ids)
+                    tokenizer.complete_sequence(seq)
 
-                except Exception as e:
-                    import traceback
+                    clean_ids = []
+                    recovered_tsv_data = []
 
-                    traceback.print_exc()
-                    print(f"FAILED to process {score_name}: {e}")
+                    bar_start_quarter = 0.0
+                    current_quarter = 0.0
+                    beats_per_bar = 4.0
+                    has_seen_bar = False
+
+                    for token_str, token_id in zip(seq.tokens, seq.ids):
+                        # A. Extract Chords (Assign immediately)
+                        if token_str.startswith("[CHORD_"):
+                            chord_name = token_str[7:-1]
+                            # We already know the correct time because the Position token preceded this
+                            recovered_tsv_data.append((chord_name, current_quarter))
+                            continue  # Skip adding to clean_ids
+
+                        # Keep standard tokens for the MIDI
+                        clean_ids.append(token_id)
+
+                        # B. Track Absolute Time
+                        if token_str.startswith("TimeSig_"):
+                            num, den = token_str.split("_")[1].split("/")
+                            beats_per_bar = int(num) * (4.0 / int(den))
+
+                        elif token_str.startswith("Bar_"):
+                            if has_seen_bar:
+                                bar_start_quarter += beats_per_bar
+                            has_seen_bar = True
+
+                        elif token_str.startswith("Position_"):
+                            pos_idx = int(token_str.split("_")[1])
+                            current_quarter = bar_start_quarter + (
+                                pos_idx / POSITIONS_PER_BEAT
+                            )
+
+                    # C. Save the Recovered TSV
+                    tsv_path = os.path.join(
+                        song_out_dir, f"{score_name}_CHORDS_RECOVERED.tsv"
+                    )
+                    with open(tsv_path, "w", encoding="utf-8") as tf:
+                        tf.write("Chord\tOffset_Quarter\n")
+                        for chord, offset in recovered_tsv_data:
+                            # Format cleanly (e.g., Cmaj7    370.5)
+                            tf.write(f"{chord}\t{offset:.3f}\n")
+
+                    # D. Save the Cleaned Melody MIDI
+                    clean_seq = TokSequence(ids=clean_ids)
+                    decoded_melody = tokenizer.decode([clean_seq])
+                    out_melody_path = os.path.join(
+                        song_out_dir, f"{score_name}_MELODY.mid"
+                    )
+                    decoded_melody.dump_midi(out_melody_path)
+
+                    print(f"Decoded Melody & Chords: {score_name}")
+
+            except Exception as e:
+                import traceback
+
+                traceback.print_exc()
+                print(f"Failed decoding {f}: {e}")
 
 
 if __name__ == "__main__":
-    decode_literal_dataset()
+    decode_dataset()

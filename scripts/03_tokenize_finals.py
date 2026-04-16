@@ -60,21 +60,21 @@ def load_and_map_chords(tsv_path, ticks_per_quarter):
 
 def inject_chords_into_remi(remi_tokens, chords_by_tick, ticks_per_quarter):
     """
-    Walks the REMI sequence and uses the absolute grid tick to pop chords
-    directly from the hash map, eliminating the need to track TSV index pointers.
+    Chronologically injects chords. If the melody skips a beat where a chord
+    occurs (due to a rest or tied note), it synthesizes the missing Position token.
     """
     injected_sequence = []
     current_bar_tick = 0
     ticks_per_pos = ticks_per_quarter / POSITIONS_PER_BEAT
 
-    # Defaults (Updated dynamically if TimeSig tokens exist)
+    # Defaults
     beats_per_bar = 4.0
     ticks_per_bar = int(beats_per_bar * ticks_per_quarter)
 
-    # Keep a sorted list of ticks to ensure we process them chronologically
     pending_ticks = sorted(chords_by_tick.keys())
 
     for token in remi_tokens:
+
         # 1. Update Grid Dimensions
         if token.startswith("TimeSig_"):
             try:
@@ -87,31 +87,54 @@ def inject_chords_into_remi(remi_tokens, chords_by_tick, ticks_per_quarter):
 
         # 2. Advance Timeline by One Full Bar
         elif token.startswith("Bar_"):
-            if len(injected_sequence) > 0 and any(
-                t.startswith("Bar_") for t in injected_sequence
-            ):
-                current_bar_tick += ticks_per_bar
+            has_seen_bar = any(t.startswith("Bar_") for t in injected_sequence)
+
+            if has_seen_bar:
+                next_bar_tick = current_bar_tick + ticks_per_bar
+
+                # Flush any chords that happened during a rest at the end of the measure
+                # (or during a completely empty measure)
+                while pending_ticks and pending_ticks[0] < next_bar_tick:
+                    t = pending_ticks.pop(0)
+                    chord_pos_idx = int(round((t - current_bar_tick) / ticks_per_pos))
+                    injected_sequence.append(f"Position_{chord_pos_idx}")
+                    injected_sequence.extend(chords_by_tick[t])
+
+                current_bar_tick = next_bar_tick
+
             injected_sequence.append(token)
 
         # 3. Calculate Absolute Tick & Inject Chords
         elif token.startswith("Position_"):
             pos_idx = int(token.split("_")[1])
-            current_tick = current_bar_tick + int(pos_idx * ticks_per_pos)
+            # Use round() to prevent floating point drift on tuplets
+            current_tick = current_bar_tick + int(round(pos_idx * ticks_per_pos))
 
-            # Flush chords mapped at or before this exact grid position
-            # Using <= acts as a safety net for minor floating point / tuplet rounding differences
-            while pending_ticks and pending_ticks[0] <= current_tick:
+            # A. Flush chords that were SKIPPED by the melody
+            while pending_ticks and pending_ticks[0] < current_tick:
                 t = pending_ticks.pop(0)
+                chord_pos_idx = int(round((t - current_bar_tick) / ticks_per_pos))
+                injected_sequence.append(f"Position_{chord_pos_idx}")
                 injected_sequence.extend(chords_by_tick[t])
 
+            # B. Append the actual melody position token
             injected_sequence.append(token)
+
+            # C. Flush chords that happen EXACTLY on this melody note
+            # (Piggybacking on the existing Position token we just placed)
+            while pending_ticks and pending_ticks[0] == current_tick:
+                t = pending_ticks.pop(0)
+                injected_sequence.extend(chords_by_tick[t])
 
         # 4. Standard Note Data
         else:
             injected_sequence.append(token)
 
-    # Catch any lingering trailing chords (e.g., ringing out past the last grid position)
-    for t in pending_ticks:
+    # 5. Catch any lingering trailing chords in the final measure
+    while pending_ticks:
+        t = pending_ticks.pop(0)
+        chord_pos_idx = int(round((t - current_bar_tick) / ticks_per_pos))
+        injected_sequence.append(f"Position_{chord_pos_idx}")
         injected_sequence.extend(chords_by_tick[t])
 
     return injected_sequence
