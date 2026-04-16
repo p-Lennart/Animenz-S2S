@@ -13,3 +13,8 @@ scripts/lib/__pycache__
 /staging2
 /.vscode
 *.pyc
+*.7z
+/decoded_midi
+/final
+/scripts/lib/__pycache__
+/tokenized_dataset
