@@ -3,8 +3,8 @@ import json
 from miditok import REMI, TokSequence
 
 # --- CONFIGURATION ---
-TOKEN_DIR = "./../tokenized_dataset"
-OUTPUT_DIR = "./../decoded_midi"
+TOKEN_DIR = "./../05_tokenized"
+OUTPUT_DIR = "./../07_decoded"
 POSITIONS_PER_BEAT = 8  # Must match your tokenization config
 
 

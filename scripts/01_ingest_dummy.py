@@ -2,12 +2,13 @@ import os
 import glob
 import yaml
 import re
+
 from lib.ScoreProcessor import ScoreProcessor
 from lib.ChordExtractor import ChordExtractor
 
 # --- PATHS ---
-INPUT_DIR = "./../test"
-STAGING_DIR = "./../staging2"
+INPUT_DIR = "./../01_raw_xml"
+STAGING_DIR = "./../02_uniques_staging"
 CONFIG_FILE = "default_config.yaml"
 
 

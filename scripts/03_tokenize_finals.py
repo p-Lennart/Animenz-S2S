@@ -7,30 +7,48 @@ from pathlib import Path
 from miditok import REMI, TokenizerConfig
 
 # --- CONFIGURATION ---
-FINAL_DIR = "./../final"
-OUTPUT_DIR = "./../tokenized_dataset"
+FINAL_DIR = "./../03_uniques"
+OUTPUT_DIR = "./../05_tokenized"
 POSITIONS_PER_BEAT = 8  # Granularity of the REMI grid (8 positions per quarter note)
 
 
 def sanitize_chord(chord_str):
     """
-    Cleans music21 chord strings into categorical tokens.
-    Preserves quality numbers (e.g., C7, D-9) and maps music21 flats ('-') to 'b'.
-
-    Examples:
-    'E-m7/G-' -> '[CHORD_Ebm7/Gb]'
-    'A-power' -> '[CHORD_Abpower]'
-    'F7'      -> '[CHORD_F7]'
+    Cleans music21 chord strings into categorical tokens,
+    and enforces strict enharmonic normalization.
     """
     if "Cannot Be Identified" in chord_str:
         return "[CHORD_NC]"
 
-    # Remove whitespace
-    c = chord_str.replace(" ", "")
+    # Remove whitespace and normalize music21's flat symbol '-' to 'b'
+    c = chord_str.replace(" ", "").replace("-", "b")
 
-    # Convert music21's flat symbol '-' to 'b'
-    # (e.g., E-m7 -> Ebm7)
-    c = c.replace("-", "b")
+    # Dictionary to force everything to a single canonical spelling
+    enharmonics = {
+        "C#": "Db",
+        "D#": "Eb",
+        "E#": "F",
+        "F#": "Gb",
+        "G#": "Ab",
+        "A#": "Bb",
+        "B#": "C",
+        "Cb": "B",
+        "Fb": "E",  # Catch edge-case extreme flats too
+    }
+
+    def normalize_pitch(pitch_str):
+        # We only check the beginning of the string to avoid altering qualities
+        for sharp, flat in enharmonics.items():
+            if pitch_str.startswith(sharp):
+                return flat + pitch_str[len(sharp) :]
+        return pitch_str
+
+    # Process root and bass independently if it's a slash chord
+    if "/" in c:
+        root, bass = c.split("/")
+        c = f"{normalize_pitch(root)}/{normalize_pitch(bass)}"
+    else:
+        c = normalize_pitch(c)
 
     return f"[CHORD_{c}]"
 
