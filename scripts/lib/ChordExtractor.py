@@ -271,11 +271,11 @@ class ChordExtractor:
         best_rank = 1
         current_notes = [bass_note]
 
-        mins = int(timestamp // 60)
-        secs = timestamp % 60
-        print(
-            f"[DEBUG] T: {mins:02d}:{secs:06.3f} | Bass: {bass_note.pitch.nameWithOctave}"
-        )
+        # mins = int(timestamp // 60)
+        # secs = timestamp % 60
+        # print(
+        #     f"[DEBUG] T: {mins:02d}:{secs:06.3f} | Bass: {bass_note.pitch.nameWithOctave}"
+        # )
 
         limit = min(len(priority_pcs) + 1, 7)
 
@@ -317,7 +317,7 @@ class ChordExtractor:
             rank = self._get_quality_rank(symbol, unique_pcs)
 
             note_names = [n.pitch.name for n in current_notes]
-            print(f"   + Try {note_names} -> '{symbol}' (Rank {rank})")
+            # print(f"   + Try {note_names} -> '{symbol}' (Rank {rank})")
 
             if rank == 0:
                 break
@@ -327,5 +327,5 @@ class ChordExtractor:
                 best_symbol = symbol
                 best_rank = rank
 
-        print(f"   => MATCH: {best_symbol}")
+        # print(f"   => MATCH: {best_symbol}")
         return best_symbol
