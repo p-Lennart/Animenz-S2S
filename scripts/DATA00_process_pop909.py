@@ -4,7 +4,6 @@ import yaml
 import shutil
 from pathlib import Path
 import time
-import re
 
 from lib.ScoreProcessorPop909 import ScoreProcessorPop909
 

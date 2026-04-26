@@ -3,18 +3,31 @@ import argparse
 import mido
 from music21 import converter
 
+# Import custom classes
 from lib.ChordExtractor import ChordExtractor
 from lib.MidiAligner import MidiAligner
 
 
 class ScoreProcessorPop909:
     def __init__(self, input_dir, output_root):
+        """
+        Initializes the processor for a single POP909 song folder.
+
+        Args:
+            input_dir (str): Path to the specific song folder (e.g., 'dataset/001').
+            output_root (str): The root directory where the new song folder will be created.
+        """
         self.input_dir = os.path.normpath(input_dir)
         self.output_root = os.path.normpath(output_root)
+
+        # Extract the 3-digit code from the folder name
         self.score_name = os.path.basename(self.input_dir)
+
+        # Define the target output directory for this specific song
         self.output_dir = os.path.join(self.output_root, self.score_name)
 
     def process(self):
+        """Executes the conversion and extraction process."""
         input_midi_path = os.path.join(self.input_dir, f"{self.score_name}.mid")
         beat_txt_path = os.path.join(self.input_dir, "beat_midi.txt")
 
@@ -29,10 +42,8 @@ class ScoreProcessorPop909:
         # 2. Load & Quantize the MIDI file
         aligner = MidiAligner()
         if os.path.exists(beat_txt_path):
-            # Warps the timeline to strict beats if the beat map exists
             original_mid = aligner.align_midi(input_midi_path, beat_txt_path)
         else:
-            # Fallback for unexpected missing text files
             original_mid = mido.MidiFile(input_midi_path)
             print(
                 f"[Warning] No beat_midi.txt found for {self.score_name}. Using raw MIDI."
@@ -68,14 +79,19 @@ class ScoreProcessorPop909:
                 else:
                     meta_tracks.append(track)
 
-        melody_mid.tracks.extend(meta_tracks + melody_tracks)
-        literal_mid.tracks.extend(meta_tracks + melody_tracks + piano_tracks)
+        # 4. Build and Save initial MIDI files
 
-        # 4. Save isolated MIDI files
+        # MELODY.mid: Merge meta and melody tracks into a single unified Track 0
+        merged_melody_track = mido.merge_tracks(meta_tracks + melody_tracks)
+        melody_mid.tracks.append(merged_melody_track)
+
         melody_midi_path = os.path.join(
             self.output_dir, f"{self.score_name}_MELODY.mid"
         )
         melody_mid.save(melody_midi_path)
+
+        # LITERAL.mid: Save temporarily as multi-track so music21 can map them correctly
+        literal_mid.tracks.extend(meta_tracks + melody_tracks + piano_tracks)
 
         literal_midi_path = os.path.join(
             self.output_dir, f"{self.score_name}_LITERAL.mid"
@@ -106,12 +122,22 @@ class ScoreProcessorPop909:
                 for timestamp, chord_name, offset in chord_events:
                     f.write(f"{timestamp}\t{chord_name}\t{offset}\n")
 
+        # 6. Flatten LITERAL.mid into a single track and overwrite
+        flat_literal_mid = mido.MidiFile(ticks_per_beat=original_mid.ticks_per_beat)
+        merged_literal_track = mido.merge_tracks(
+            meta_tracks + melody_tracks + piano_tracks
+        )
+        flat_literal_mid.tracks.append(merged_literal_track)
+
+        # Overwrite the multi-track version with the single-track version
+        flat_literal_mid.save(literal_midi_path)
+
         print(f"Successfully processed & aligned: {self.score_name}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Process a POP909 song folder into custom custom formats."
+        description="Process a POP909 song folder into custom formats."
     )
     parser.add_argument(
         "--input_dir",
@@ -127,7 +153,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    processor = Pop909ScoreProcessor(
+    processor = ScoreProcessorPop909(
         input_dir=args.input_dir, output_root=args.output_dir
     )
     processor.process()

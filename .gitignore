@@ -26,3 +26,9 @@
 /10_POP909_raw
 /11_POP909_processed
 /13_chord_dictionary
+/00_mscz_raw
+/01_xml_raw
+/40_phase2_tokens
+/41_phase2_decoded
+/20_master_chord_vocab
+/30_phase1_tokens

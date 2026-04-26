@@ -4,13 +4,12 @@ import yaml
 import re
 
 from lib.ScoreProcessor import ScoreProcessor
-from lib.ChordExtractor import ChordExtractor
 
 # --- PATHS ---
-INPUT_DIR = "./../01_raw_xml"
+INPUT_DIR = "./../01_xml_raw"
 STAGING_DIR = "./../02_uniques_staging"
 UNIQUES_DIR = "./../03_uniques"
-CONFIG_FILE = "default_config.yaml"
+CONFIG_FILE = "ingest_defaults.yaml"
 
 
 def load_config(path):

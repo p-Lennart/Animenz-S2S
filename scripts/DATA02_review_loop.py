@@ -6,8 +6,7 @@ from pathlib import Path
 from collections import defaultdict
 from symusic import Score
 
-# Look how clean this is now!
-import P01_ingest_xml as ingest
+import DATA01_ingest_xml as ingest
 
 # Configure your directories here
 STAGING_DIR = Path("./../02_uniques_staging")
