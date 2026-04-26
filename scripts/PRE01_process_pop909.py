@@ -15,10 +15,27 @@ POP909_PROCESSED_DIR = Path("./../11_POP909_processed")
 
 def force_delete_dir(target_dir: Path):
     """Helper to safely delete a directory, blocking if locked by Windows."""
+
+    # Check if directory exists before prompting
+    if not target_dir.exists():
+        print(f"Directory '{target_dir}' does not exist.")
+        return
+
+    # Prompt for confirmation
+    confirm = (
+        input(f"⚠️ Are you sure you want to permanently delete '{target_dir}'? (y/n): ")
+        .strip()
+        .lower()
+    )
+    if confirm not in ("y", "yes"):
+        print("Deletion cancelled.")
+        return
+
     lock_notified = False
     while target_dir.exists():
         try:
             shutil.rmtree(target_dir)
+            print(f"✅ Deleted '{target_dir.name}'.")
             break
         except PermissionError:
             if not lock_notified:

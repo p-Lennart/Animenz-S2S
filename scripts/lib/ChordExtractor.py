@@ -316,7 +316,7 @@ class ChordExtractor:
 
             rank = self._get_quality_rank(symbol, unique_pcs)
 
-            note_names = [n.pitch.name for n in current_notes]
+            # note_names = [n.pitch.name for n in current_notes]
             # print(f"   + Try {note_names} -> '{symbol}' (Rank {rank})")
 
             if rank == 0:
