@@ -1,6 +1,9 @@
 import os
 import json
 from miditok import REMI, TokSequence
+from pathlib import Path
+
+from scripts.lib.file_utils import force_delete_dir
 
 # --- CONFIGURATION ---
 TOKEN_DIR = "../40_phase2_tokens"
@@ -12,6 +15,9 @@ CONFIG_PATH = "../30_phase1_tokens/tokenizer_config.json"
 
 
 def decode_dataset():
+    if not force_delete_dir(Path(OUTPUT_DIR)):
+        print(f"⛔ Existing directory {OUTPUT_DIR} not cleared")
+        return
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     if not os.path.exists(CONFIG_PATH):

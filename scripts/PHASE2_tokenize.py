@@ -1,5 +1,7 @@
 import os
+from pathlib import Path
 from lib.TokenizationCore import PianoArrangerTokenizer
+from scripts.lib.file_utils import force_delete_dir
 
 TARGET_IN_DIR = "../04_augmented"
 TARGET_OUT_DIR = "../40_phase2_tokens"
@@ -9,7 +11,10 @@ CONFIG_PATH = "../30_phase1_tokens/tokenizer_config.json"
 
 
 def run_phase2_tokenization():
-    print("--- Starting Phase 2 Tokenization ---")
+    if not force_delete_dir(Path(TARGET_OUT_DIR)):
+        print(f"⛔ Existing directory {TARGET_OUT_DIR} not cleared")
+        return
+    os.makedirs(TARGET_OUT_DIR, exist_ok=True)
 
     if not os.path.exists(CONFIG_PATH):
         print(f"CRITICAL ERROR: Could not find {CONFIG_PATH}.")
@@ -17,6 +22,7 @@ def run_phase2_tokenization():
             "Please run PHASE1_build_master_vocab.py first to establish the vocabulary."
         )
         return
+    print("--- Starting Phase 2 Tokenization ---")
 
     # 1. Initialize the Core object
     core = PianoArrangerTokenizer()

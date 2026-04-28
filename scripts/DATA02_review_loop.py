@@ -7,34 +7,14 @@ from collections import defaultdict
 from symusic import Score
 
 import DATA01_ingest_xml as ingest
+from lib.file_utils import force_delete_dir
 
 # Configure your directories here
 STAGING_DIR = Path("./../02_uniques_staging")
 UNIQUES_DIR = Path("./../03_uniques")
 
 
-def force_delete_dir(target_dir: Path):
-    """Helper to safely delete a directory, blocking if locked by Windows."""
-    lock_notified = False
-    while target_dir.exists():
-        try:
-            shutil.rmtree(target_dir)
-            break
-        except PermissionError:
-            if not lock_notified:
-                print(
-                    f"⏳ [LOCKED] '{target_dir.name}' is open in your editor. Waiting for it to close",
-                    end="",
-                    flush=True,
-                )
-                lock_notified = True
-            time.sleep(1.5)
-            print(".", end="", flush=True)
-        except FileNotFoundError:
-            break  # Safe to break if something else somehow deleted it
 
-    if lock_notified:
-        print()  # Print a new line once the dots stop
 
 
 def consolidate_tracks(score: Score) -> Score:
@@ -153,7 +133,7 @@ def process_music_staging():
                 config["REPROCESS"] = False
 
                 # Safely delete the old directory
-                force_delete_dir(song_dir)
+                force_delete_dir(song_dir, prompt=False)
 
                 # Recreate directory and write the updated config
                 song_dir.mkdir(parents=True, exist_ok=True)
@@ -236,7 +216,7 @@ def process_music_staging():
                 shutil.copy2(chords_path, dest_dir / chords_path.name)
 
                 # Delete folder safely
-                force_delete_dir(song_dir)
+                force_delete_dir(song_dir, prompt=False)
 
                 print(f"✅ {song_dir.name}")
                 num_moved += 1
