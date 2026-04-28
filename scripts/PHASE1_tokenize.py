@@ -1,6 +1,10 @@
 import os
+from pathlib import Path
 import json
+import shutil
+import time
 from lib.TokenizationCore import PianoArrangerTokenizer
+from lib.file_utils import force_delete_dir
 
 POP909_IN_DIR = "../11_POP909_processed"
 DICT_IN_DIR = "../20_master_chord_vocab"
@@ -9,6 +13,10 @@ MASTER_VOCAB_PATH = "../20_master_chord_vocab/master_vocab.json"
 
 
 def run_phase1_tokenization():
+    if not force_delete_dir(Path(PHASE1_OUT_DIR)):
+        print(f"⛔ Existing directory {PHASE1_OUT_DIR} not cleared")
+        return
+
     print("--- Starting Phase 1 Tokenization ---")
 
     # 1. Load the canonical target vocabulary

@@ -6,57 +6,18 @@ from pathlib import Path
 import time
 
 from lib.ScoreProcessorPop909 import ScoreProcessorPop909
+from lib.file_utils import force_delete_dir
 
 # --- PATHS ---
 POP909_RAW_DIR = Path("./../10_POP909_raw")
 POP909_PROCESSED_DIR = Path("./../11_POP909_processed")
 
-
-def force_delete_dir(target_dir: Path):
-    """Helper to safely delete a directory, blocking if locked by Windows."""
-
-    # Check if directory exists before prompting
-    if not target_dir.exists():
-        print(f"Directory '{target_dir}' does not exist.")
-        return
-
-    # Prompt for confirmation
-    confirm = (
-        input(f"⚠️ Are you sure you want to permanently delete '{target_dir}'? (y/n): ")
-        .strip()
-        .lower()
-    )
-    if confirm not in ("y", "yes"):
-        print("Deletion cancelled.")
-        return
-
-    lock_notified = False
-    while target_dir.exists():
-        try:
-            shutil.rmtree(target_dir)
-            print(f"✅ Deleted '{target_dir.name}'.")
-            break
-        except PermissionError:
-            if not lock_notified:
-                print(
-                    f"⏳ [LOCKED] '{target_dir.name}' is open in your editor. Waiting for it to close",
-                    end="",
-                    flush=True,
-                )
-                lock_notified = True
-            time.sleep(1.5)
-            print(".", end="", flush=True)
-        except FileNotFoundError:
-            break  # Safe to break if something else deleted it
-
-    if lock_notified:
-        print()  # Print a new line once the dots stop
-
-
 def main():
     # Ensure dirs, wipe processed dir ahead of new generation
     os.makedirs(POP909_RAW_DIR, exist_ok=True)
-    force_delete_dir(POP909_PROCESSED_DIR)
+    if not force_delete_dir(POP909_PROCESSED_DIR):
+        print(f"⛔ Existing directory {POP909_PROCESSED_DIR} not cleared")
+        return
     os.makedirs(POP909_PROCESSED_DIR, exist_ok=True)
 
     # Find all 3-digit folders in the POP909 root
@@ -80,7 +41,6 @@ def main():
             traceback.print_exc()
 
     print(f"🏁 Processed all songs in {POP909_RAW_DIR}")
-
 
 if __name__ == "__main__":
     main()

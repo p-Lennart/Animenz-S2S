@@ -4,57 +4,22 @@ import shutil
 import time
 from pathlib import Path
 from lib.TokenizationCore import sanitize_chord
-from lib.ChordDictGeneration import make_chord_dict_entry
+from lib.ChordDictGeneration import process_chord_token
+from lib.file_utils import force_delete_dir
 
 # --- CONFIGURATION ---
 DATA_DIRS = ["../04_augmented", "../11_POP909_processed"]
 MASTER_VOCAB_DIR = "../20_master_chord_vocab"
 
 
-def force_delete_dir(target_dir: Path):
-    """Helper to safely delete a directory, blocking if locked by Windows."""
 
-    # Check if directory exists before prompting
-    if not target_dir.exists():
-        print(f"Directory '{target_dir}' does not exist.")
-        return
-
-    # Prompt for confirmation
-    confirm = (
-        input(f"⚠️ Are you sure you want to permanently delete '{target_dir}'? (y/n): ")
-        .strip()
-        .lower()
-    )
-    if confirm not in ("y", "yes"):
-        print("Deletion cancelled.")
-        return
-
-    lock_notified = False
-    while target_dir.exists():
-        try:
-            shutil.rmtree(target_dir)
-            print(f"✅ Deleted '{target_dir.name}'.")
-            break
-        except PermissionError:
-            if not lock_notified:
-                print(
-                    f"⏳ [LOCKED] '{target_dir.name}' is open in your editor. Waiting for it to close",
-                    end="",
-                    flush=True,
-                )
-                lock_notified = True
-            time.sleep(1.5)
-            print(".", end="", flush=True)
-        except FileNotFoundError:
-            break  # Safe to break if something else deleted it
-
-    if lock_notified:
-        print()  # Print a new line once the dots stop
 
 
 def build_master_vocabulary():
     # Clear master folder
-    force_delete_dir(Path(MASTER_VOCAB_DIR))
+    if not force_delete_dir(Path(MASTER_VOCAB_DIR)):
+        print(f"⛔ Existing directory {MASTER_VOCAB_DIR} not cleared")
+        return
     os.makedirs(MASTER_VOCAB_DIR, exist_ok=True)
 
     print("--- Starting Master Vocabulary Consolidation ---")
@@ -100,8 +65,7 @@ def build_master_vocabulary():
 
     for chord_token in vocab_list:
         try:
-            # Calls your custom generation logic!
-            make_chord_dict_entry(chord_token, MASTER_VOCAB_DIR)
+            process_chord_token(chord_token, MASTER_VOCAB_DIR)
             success_count += 1
         except Exception as e:
             print(f"  [ERROR] Failed to generate dict entry for {chord_token}: {e}")
