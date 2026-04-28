@@ -26,6 +26,22 @@ class ScoreProcessorPop909:
         # Define the target output directory for this specific song
         self.output_dir = os.path.join(self.output_root, self.score_name)
 
+    def _flatten_and_rechannel(self, tracks):
+        """
+        Merges a list of tracks into one and forces all channel-specific
+        messages (like note_on, note_off) to channel 0.
+        """
+        merged_track = mido.merge_tracks(tracks)
+        final_track = mido.MidiTrack()
+
+        for msg in merged_track:
+            # If the message has a channel attribute, force it to 0
+            if hasattr(msg, "channel"):
+                msg = msg.copy(channel=0)
+            final_track.append(msg)
+
+        return final_track
+
     def process(self):
         """Executes the conversion and extraction process."""
         input_midi_path = os.path.join(self.input_dir, f"{self.score_name}.mid")
@@ -42,21 +58,39 @@ class ScoreProcessorPop909:
         # 2. Load & Quantize the MIDI file
         aligner = MidiAligner()
         if os.path.exists(beat_txt_path):
-            original_mid = aligner.align_midi(input_midi_path, beat_txt_path)
+            raw_mid = aligner.align_midi(input_midi_path, beat_txt_path)
         else:
-            original_mid = mido.MidiFile(input_midi_path)
+            raw_mid = mido.MidiFile(input_midi_path)
             print(
                 f"[Warning] No beat_midi.txt found for {self.score_name}. Using raw MIDI."
             )
 
-        melody_mid = mido.MidiFile(ticks_per_beat=original_mid.ticks_per_beat)
-        literal_mid = mido.MidiFile(ticks_per_beat=original_mid.ticks_per_beat)
+        # 2.5 Clean the MIDI file: Strip program & control changes while preserving delta timing
+        original_mid = mido.MidiFile(ticks_per_beat=raw_mid.ticks_per_beat)
 
+        for track in raw_mid.tracks:
+            new_track = mido.MidiTrack()
+            if hasattr(track, "name"):
+                new_track.name = track.name
+
+            accumulated_time = 0
+            for msg in track:
+                # Add this event's time to our running total
+                accumulated_time += msg.time
+
+                # If it's a keeper, give it the accumulated time and reset the counter
+                if msg.type not in ["program_change", "control_change"]:
+                    new_msg = msg.copy(time=accumulated_time)
+                    new_track.append(new_msg)
+                    accumulated_time = 0  # Reset for the next event
+
+            original_mid.tracks.append(new_track)
+
+        # 3. Track parsing and distribution
         meta_tracks = []
         melody_tracks = []
         piano_tracks = []
 
-        # 3. Track parsing and distribution
         for i, track in enumerate(original_mid.tracks):
             track_name = track.name.strip().upper()
 
@@ -81,9 +115,11 @@ class ScoreProcessorPop909:
 
         # 4. Build and Save initial MIDI files
 
-        # MELODY.mid: Merge meta and melody tracks into a single unified Track 0
-        merged_melody_track = mido.merge_tracks(meta_tracks + melody_tracks)
-        melody_mid.tracks.append(merged_melody_track)
+        # MELODY.mid: Merge, re-channel to 0, and save
+        melody_mid = mido.MidiFile(ticks_per_beat=original_mid.ticks_per_beat)
+        melody_mid.tracks.append(
+            self._flatten_and_rechannel(meta_tracks + melody_tracks)
+        )
 
         melody_midi_path = os.path.join(
             self.output_dir, f"{self.score_name}_MELODY.mid"
@@ -91,6 +127,7 @@ class ScoreProcessorPop909:
         melody_mid.save(melody_midi_path)
 
         # LITERAL.mid: Save temporarily as multi-track so music21 can map them correctly
+        literal_mid = mido.MidiFile(ticks_per_beat=original_mid.ticks_per_beat)
         literal_mid.tracks.extend(meta_tracks + melody_tracks + piano_tracks)
 
         literal_midi_path = os.path.join(
@@ -122,17 +159,16 @@ class ScoreProcessorPop909:
                 for timestamp, chord_name, offset in chord_events:
                     f.write(f"{timestamp}\t{chord_name}\t{offset}\n")
 
-        # 6. Flatten LITERAL.mid into a single track and overwrite
+        # 6. Flatten LITERAL.mid into a single track (with channel=0) and overwrite
         flat_literal_mid = mido.MidiFile(ticks_per_beat=original_mid.ticks_per_beat)
-        merged_literal_track = mido.merge_tracks(
-            meta_tracks + melody_tracks + piano_tracks
+        flat_literal_mid.tracks.append(
+            self._flatten_and_rechannel(meta_tracks + melody_tracks + piano_tracks)
         )
-        flat_literal_mid.tracks.append(merged_literal_track)
 
-        # Overwrite the multi-track version with the single-track version
+        # Overwrite the multi-track version with the single-track, re-channeled version
         flat_literal_mid.save(literal_midi_path)
 
-        print(f"Successfully processed & aligned: {self.score_name}")
+        print(f"Successfully processed, cleaned, & aligned: {self.score_name}")
 
 
 if __name__ == "__main__":
