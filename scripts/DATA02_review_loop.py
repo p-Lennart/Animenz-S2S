@@ -132,11 +132,10 @@ def process_music_staging():
                 # Reset flag so it doesn't infinite loop on next run
                 config["REPROCESS"] = False
 
-                # Safely delete the old directory
-                force_delete_dir(song_dir, prompt=False)
+                # Safely delete the old directory and recreate it
+                force_delete_dir(song_dir, prompt=False, refresh=True)
 
-                # Recreate directory and write the updated config
-                song_dir.mkdir(parents=True, exist_ok=True)
+                # Write the updated config
                 with open(song_dir / meta_path.name, "w") as f:
                     yaml.dump(config, f, default_flow_style=False)
 

@@ -2,7 +2,6 @@ import os
 import json
 import shutil
 import time
-from pathlib import Path
 from lib.TokenizationCore import sanitize_chord
 from lib.ChordDictGeneration import process_chord_token
 from lib.file_utils import force_delete_dir
@@ -12,15 +11,11 @@ DATA_DIRS = ["../04_augmented", "../11_POP909_processed"]
 MASTER_VOCAB_DIR = "../20_master_chord_vocab"
 
 
-
-
-
 def build_master_vocabulary():
     # Clear master folder
-    if not force_delete_dir(Path(MASTER_VOCAB_DIR)):
+    if not force_delete_dir(MASTER_VOCAB_DIR, refresh=True):
         print(f"⛔ Existing directory {MASTER_VOCAB_DIR} not cleared")
         return
-    os.makedirs(MASTER_VOCAB_DIR, exist_ok=True)
 
     print("--- Starting Master Vocabulary Consolidation ---")
 

@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 import json
 import shutil
 import time
@@ -13,7 +12,7 @@ MASTER_VOCAB_PATH = "../20_master_chord_vocab/master_vocab.json"
 
 
 def run_phase1_tokenization():
-    if not force_delete_dir(Path(PHASE1_OUT_DIR)):
+    if not force_delete_dir(PHASE1_OUT_DIR, refresh=True):
         print(f"⛔ Existing directory {PHASE1_OUT_DIR} not cleared")
         return
 

@@ -2,23 +2,22 @@ import os
 import glob
 import yaml
 import shutil
-from pathlib import Path
 import time
 
 from lib.ScoreProcessorPop909 import ScoreProcessorPop909
 from lib.file_utils import force_delete_dir
 
 # --- PATHS ---
-POP909_RAW_DIR = Path("./../10_POP909_raw")
-POP909_PROCESSED_DIR = Path("./../11_POP909_processed")
+POP909_RAW_DIR = "./../10_POP909_raw"
+POP909_PROCESSED_DIR = "./../11_POP909_processed"
+
 
 def main():
     # Ensure dirs, wipe processed dir ahead of new generation
     os.makedirs(POP909_RAW_DIR, exist_ok=True)
-    if not force_delete_dir(POP909_PROCESSED_DIR):
+    if not force_delete_dir(POP909_PROCESSED_DIR, refresh=True):
         print(f"⛔ Existing directory {POP909_PROCESSED_DIR} not cleared")
         return
-    os.makedirs(POP909_PROCESSED_DIR, exist_ok=True)
 
     # Find all 3-digit folders in the POP909 root
     song_folders = sorted(glob.glob(os.path.join(POP909_RAW_DIR, "[0-9][0-9][0-9]")))
@@ -41,6 +40,7 @@ def main():
             traceback.print_exc()
 
     print(f"🏁 Processed all songs in {POP909_RAW_DIR}")
+
 
 if __name__ == "__main__":
     main()

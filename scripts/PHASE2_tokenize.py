@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 from lib.TokenizationCore import PianoArrangerTokenizer
 from lib.file_utils import force_delete_dir
 
@@ -12,10 +11,9 @@ CONFIG_PATH = "../30_phase1_tokens/tokenizer_config.json"
 
 
 def run_phase2_tokenization():
-    if not force_delete_dir(Path(TARGET_OUT_DIR)):
+    if not force_delete_dir(TARGET_OUT_DIR, refresh=True):
         print(f"⛔ Existing directory {TARGET_OUT_DIR} not cleared")
         return
-    os.makedirs(TARGET_OUT_DIR, exist_ok=True)
 
     if not os.path.exists(CONFIG_PATH):
         print(f"CRITICAL ERROR: Could not find {CONFIG_PATH}.")
