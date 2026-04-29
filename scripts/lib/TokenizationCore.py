@@ -176,9 +176,23 @@ class PianoArrangerTokenizer:
             else:
                 injected_sequence.append(token)
 
+        # 5. Catch any lingering trailing chords in the final measure (The Outro Fix)
         while pending_ticks:
             t = pending_ticks.pop(0)
+
+            # If the chord happens in a future measure (because the melody track ended),
+            # synthesize the missing Bar tokens to keep the timeline advancing!
+            while t >= current_bar_tick + ticks_per_bar:
+                injected_sequence.append("Bar_None")
+                current_bar_tick += ticks_per_bar
+
             chord_pos_idx = int(round((t - current_bar_tick) / ticks_per_pos))
+
+            # Failsafe clamp to prevent floating-point precision from pushing it out of bounds
+            positions_per_bar = int(round(ticks_per_bar / ticks_per_pos))
+            if chord_pos_idx >= positions_per_bar:
+                chord_pos_idx = positions_per_bar - 1
+
             injected_sequence.append(f"Position_{chord_pos_idx}")
             injected_sequence.extend(chords_by_tick[t])
 
@@ -215,10 +229,10 @@ class PianoArrangerTokenizer:
 
                     assert (
                         len(sym_melody.tracks) <= 1
-                    ), f"Expected <1 track, got {len(sym_melody.tracks)}"
+                    ), f"Expected <1 melody track, got {len(sym_melody.tracks)}"
                     assert (
                         len(sym_literal.tracks) == 1
-                    ), f"Expected 1 track, got {len(sym_literal.tracks)}"
+                    ), f"Expected 1 literal track, got {len(sym_literal.tracks)}"
 
                     ticks_per_quarter = sym_melody.ticks_per_quarter
                     # --- THE ROUTER ---
@@ -242,7 +256,9 @@ class PianoArrangerTokenizer:
                         if tok in self.tokenizer.vocab:
                             melody_ids.append(self.tokenizer.vocab[tok])
                         else:
-                            print(f"  [WARNING] Dropping unknown token: {tok}")
+                            print(
+                                f"  [WARNING] {score_name}: Dropping unknown token: {tok}"
+                            )
 
                     out_melody = os.path.join(
                         output_dir, f"{score_name}_MELODY_CHORDS.json"
