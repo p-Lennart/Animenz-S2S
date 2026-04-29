@@ -84,6 +84,18 @@ def load_dictionary_entry(tsv_path):
     return chords_by_tick
 
 
+def reinject_velocities(generated_tokens):
+    """Satisfies MidiTok's strict grammar requirements before decoding."""
+    repaired_sequence = []
+    for token in generated_tokens:
+        repaired_sequence.append(token)
+        # The moment we see a Pitch, immediately satisfy MidiTok by faking the Velocity
+        if token.startswith("Pitch_"):
+            repaired_sequence.append("Velocity_127")
+
+    return repaired_sequence
+
+
 class PianoArrangerTokenizer:
     def __init__(self, positions_per_beat=8):
         self.positions_per_beat = positions_per_beat
@@ -205,7 +217,7 @@ class PianoArrangerTokenizer:
 
         for root, _, files in os.walk(input_dir):
             melody = literal = chords = None
-            is_dict_entry = False  # Track which TSV type we found
+            is_dict_entry = False
 
             for f in files:
                 if f.endswith("_MELODY.mid"):
@@ -219,13 +231,12 @@ class PianoArrangerTokenizer:
                     is_dict_entry = True
 
             if melody and literal and chords:
-                # Strip the correct suffix for the score name
-                suffix_to_remove = "_MELODY.mid"
-                score_name = os.path.basename(melody).replace(suffix_to_remove, "")
+                score_name = os.path.basename(melody).replace("_MELODY.mid", "")
 
                 try:
                     sym_melody = symusic.Score(melody)
                     sym_literal = symusic.Score(literal)
+                    ticks_per_quarter = sym_melody.ticks_per_quarter
 
                     assert (
                         len(sym_melody.tracks) <= 1
@@ -234,8 +245,6 @@ class PianoArrangerTokenizer:
                         len(sym_literal.tracks) == 1
                     ), f"Expected 1 literal track, got {len(sym_literal.tracks)}"
 
-                    ticks_per_quarter = sym_melody.ticks_per_quarter
-                    # --- THE ROUTER ---
                     if is_dict_entry:
                         chords_data = load_dictionary_entry(chords)
                     else:
@@ -245,20 +254,35 @@ class PianoArrangerTokenizer:
                     literal_tok_seqs = self.tokenizer(sym_literal)
 
                     raw_melody_strings = melody_tok_seqs[0].tokens
-                    literal_ids = literal_tok_seqs[0].ids
+                    raw_literal_strings = literal_tok_seqs[0].tokens
 
                     injected_melody_strings = self._inject_chords_into_remi(
                         raw_melody_strings, chords_data, ticks_per_quarter
                     )
 
+                    # --- VELOCITY STRIPPING ---
+                    final_melody_strings = [
+                        t
+                        for t in injected_melody_strings
+                        if not t.startswith("Velocity_")
+                    ]
+                    final_literal_strings = [
+                        t for t in raw_literal_strings if not t.startswith("Velocity_")
+                    ]
+
                     melody_ids = []
-                    for tok in injected_melody_strings:
+                    for tok in final_melody_strings:
                         if tok in self.tokenizer.vocab:
                             melody_ids.append(self.tokenizer.vocab[tok])
                         else:
-                            print(
-                                f"  [WARNING] {score_name}: Dropping unknown token: {tok}"
-                            )
+                            print(f"  [WARNING] Dropping unknown token: {tok}")
+
+                    literal_ids = []
+                    for tok in final_literal_strings:
+                        if tok in self.tokenizer.vocab:
+                            literal_ids.append(self.tokenizer.vocab[tok])
+                        else:
+                            print(f"  [WARNING] Dropping unknown token: {tok}")
 
                     out_melody = os.path.join(
                         output_dir, f"{score_name}_MELODY_CHORDS.json"
@@ -267,12 +291,11 @@ class PianoArrangerTokenizer:
 
                     with open(out_melody, "w") as f:
                         json.dump(
-                            {"ids": melody_ids, "tokens": injected_melody_strings}, f
+                            {"ids": melody_ids, "tokens": final_melody_strings}, f
                         )
                     with open(out_literal, "w") as f:
                         json.dump(
-                            {"ids": literal_ids, "tokens": literal_tok_seqs[0].tokens},
-                            f,
+                            {"ids": literal_ids, "tokens": final_literal_strings}, f
                         )
 
                     processed_count += 1
@@ -288,6 +311,14 @@ class PianoArrangerTokenizer:
         """Decodes JSON token sequences back into MIDI and TSV."""
         os.makedirs(output_dir, exist_ok=True)
         decoded_count = 0
+
+        # Dynamically discover the default velocity token from the vocabulary
+        try:
+            vel_tok = next(
+                k for k in self.tokenizer.vocab.keys() if k.startswith("Velocity_")
+            )
+        except StopIteration:
+            vel_tok = "Velocity_127"
 
         for root, _, files in os.walk(input_dir):
             for f in files:
@@ -312,7 +343,21 @@ class PianoArrangerTokenizer:
                     # 1. LITERAL DECODING
                     if "LITERAL" in f:
                         seq = TokSequence(ids=ids)
-                        decoded_score = self.tokenizer.decode([seq])
+                        self.tokenizer.complete_sequence(seq)
+
+                        # --- VELOCITY RESTORATION ---
+                        restored_tokens = []
+                        for t in seq.tokens:
+                            restored_tokens.append(t)
+                            if t.startswith("Pitch_"):
+                                restored_tokens.append(vel_tok)
+
+                        restored_ids = [
+                            self.tokenizer.vocab[t] for t in restored_tokens
+                        ]
+                        restored_seq = TokSequence(ids=restored_ids)
+
+                        decoded_score = self.tokenizer.decode([restored_seq])
                         out_midi_path = os.path.join(
                             song_out_dir, f"{score_name}_LITERAL.mid"
                         )
@@ -323,7 +368,7 @@ class PianoArrangerTokenizer:
                         seq = TokSequence(ids=ids)
                         self.tokenizer.complete_sequence(seq)
 
-                        clean_ids = []
+                        clean_tokens = []
                         recovered_tsv_data = []
 
                         bar_start_quarter = 0.0
@@ -331,14 +376,17 @@ class PianoArrangerTokenizer:
                         beats_per_bar = 4.0
                         has_seen_bar = False
 
-                        for token_str, token_id in zip(seq.tokens, seq.ids):
+                        for token_str in seq.tokens:
                             # A. Extract Chords
                             if token_str.startswith("[CHORD_"):
                                 chord_name = token_str[7:-1]
                                 recovered_tsv_data.append((chord_name, current_quarter))
                                 continue
 
-                            clean_ids.append(token_id)
+                            # --- VELOCITY RESTORATION ---
+                            clean_tokens.append(token_str)
+                            if token_str.startswith("Pitch_"):
+                                clean_tokens.append(vel_tok)
 
                             # B. Track Absolute Time
                             if token_str.startswith("TimeSig_"):
@@ -352,10 +400,12 @@ class PianoArrangerTokenizer:
 
                             elif token_str.startswith("Position_"):
                                 pos_idx = int(token_str.split("_")[1])
-                                # Use the class's positions_per_beat dynamically
                                 current_quarter = bar_start_quarter + (
                                     pos_idx / self.positions_per_beat
                                 )
+
+                        # Convert clean tokens back to IDs for decoding
+                        clean_ids = [self.tokenizer.vocab[t] for t in clean_tokens]
 
                         # C. Save the Recovered TSV
                         tsv_path = os.path.join(
@@ -377,6 +427,9 @@ class PianoArrangerTokenizer:
                     decoded_count += 1
 
                 except Exception as e:
+                    import traceback
+
+                    traceback.print_exc()
                     print(f"Failed decoding {f}: {e}")
 
         print(f"[Core] Successfully decoded {decoded_count} files to {output_dir}")
