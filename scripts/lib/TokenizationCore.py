@@ -84,6 +84,133 @@ def load_dictionary_entry(tsv_path):
     return chords_by_tick
 
 
+def chunk_token_sequence(tokens, chunk_size_bars=8, stride_bars=4):
+    """
+    Slices a continuous REMI token array into smaller chunks while
+    flawlessly preserving Time, Key, Chord, and Control state across boundaries.
+    """
+    bars = []
+    current_bar = []
+
+    # 1. Smart Grouping (Binds leading metadata to the first bar)
+    for token in tokens:
+        if token.startswith("Bar_"):
+            # Only start a new bar if the current one already has a Bar_ token
+            if current_bar and any(t.startswith("Bar_") for t in current_bar):
+                bars.append(current_bar)
+                current_bar = [token]
+            else:
+                current_bar.append(token)
+        else:
+            current_bar.append(token)
+
+    if current_bar:
+        bars.append(current_bar)
+
+    # 2. Pre-calculate the active state entering each bar
+    active_ts = "TimeSig_4/4"
+    active_ks = None
+    active_chord = None
+    active_control = None
+
+    bar_states = []
+
+    for bar in bars:
+        bar_states.append(
+            {
+                "ts": active_ts,
+                "ks": active_ks,
+                "chord": active_chord,
+                "control": active_control,
+            }
+        )
+
+        # Update state for the next bar
+        for t in bar:
+            if t.startswith("TimeSig_"):
+                active_ts = t
+            elif t.startswith("KeySig_"):
+                active_ks = t
+            elif t.startswith("[CHORD_"):
+                active_chord = t
+            # Any bracketed token that isn't a chord is tracked as a Control Token
+            elif t.startswith("[") and t.endswith("]") and not t.startswith("[CHORD_"):
+                active_control = t
+
+    # 3. Slide the window and generate the chunks
+    chunks = []
+    for i in range(0, len(bars), stride_bars):
+        window_bars = bars[i : i + chunk_size_bars]
+
+        if len(window_bars) < chunk_size_bars:
+            if len(chunks) > 0:
+                continue
+
+        chunk_tokens = []
+        first_bar = window_bars[0].copy()
+        entering_state = bar_states[i]
+
+        # --- A. INJECT CONTROL TOKEN ---
+        if entering_state["control"]:
+            # If the chunk doesn't already naturally start with the control token, prepend it
+            if entering_state["control"] not in first_bar:
+                first_bar.insert(0, entering_state["control"])
+
+        # --- B. FIND BASE INSERT INDEX ---
+        # Time/Key/Chords must go AFTER Bar_None
+        try:
+            base_insert_idx = first_bar.index("Bar_None") + 1
+        except ValueError:
+            # Edge case if a sequence is missing Bar_None
+            base_insert_idx = 1 if entering_state["control"] in first_bar else 0
+
+        # --- C. INJECT TIME/KEY SIGS ---
+        if entering_state["ks"] and not any(t.startswith("KeySig_") for t in first_bar):
+            first_bar.insert(base_insert_idx, entering_state["ks"])
+        if entering_state["ts"] and not any(
+            t.startswith("TimeSig_") for t in first_bar
+        ):
+            first_bar.insert(base_insert_idx, entering_state["ts"])
+
+        # --- D. INJECT CHORD ---
+        if entering_state["chord"]:
+            # We must be careful not to overwrite a new chord that naturally starts at Position 0!
+            pos_0_idx = -1
+            for idx, t in enumerate(first_bar):
+                if t == "Position_0":
+                    pos_0_idx = idx
+                    break
+
+            has_pos_0_chord = False
+            if pos_0_idx != -1 and pos_0_idx + 1 < len(first_bar):
+                if first_bar[pos_0_idx + 1].startswith("[CHORD_"):
+                    has_pos_0_chord = True
+
+            if not has_pos_0_chord:
+                if pos_0_idx != -1:
+                    # Position_0 exists (e.g., for a melody note), just attach the chord!
+                    first_bar.insert(pos_0_idx + 1, entering_state["chord"])
+                else:
+                    # Synthesize Position_0 and the Chord after TS/KS
+                    ts_ks_count = sum(
+                        1
+                        for t in first_bar
+                        if t.startswith("TimeSig_") or t.startswith("KeySig_")
+                    )
+                    chord_idx = base_insert_idx + ts_ks_count
+                    first_bar.insert(chord_idx, entering_state["chord"])
+                    first_bar.insert(chord_idx, "Position_0")
+
+        # --- REASSEMBLE CHUNK ---
+        chunk_tokens.extend(first_bar)
+        for b in window_bars[1:]:
+            chunk_tokens.extend(b)
+
+        chunks.append(chunk_tokens)
+
+    return chunks
+
+
 def reinject_velocities(generated_tokens):
     """Satisfies MidiTok's strict grammar requirements before decoding."""
     repaired_sequence = []
@@ -103,6 +230,10 @@ class PianoArrangerTokenizer:
 
     def initialize_new(self, chord_vocab):
         """Used by Phase 1 to create the canonical tokenizer."""
+        # Automatically register the Separator Token
+        if "[SEP]" not in chord_vocab:
+            chord_vocab.append("[SEP]")
+
         config = TokenizerConfig(
             beat_res={(0, 4): self.positions_per_beat, (4, 12): 8},
             use_time_signatures=True,
@@ -210,8 +341,17 @@ class PianoArrangerTokenizer:
 
         return injected_sequence
 
-    def process_directory(self, input_dir, output_dir):
-        """Scans a directory for matching file triplets and tokenizes them."""
+    def process_directory(
+        self,
+        input_dir,
+        output_dir,
+        chunk_size=8,
+        stride=4,
+        control_token=None,
+        use_stitching=True,
+        use_chunking=True,
+    ):
+        """Scans, injects, strips velocity, chunks, stitches, and tokenizes."""
         os.makedirs(output_dir, exist_ok=True)
         processed_count = 0
 
@@ -260,7 +400,6 @@ class PianoArrangerTokenizer:
                         raw_melody_strings, chords_data, ticks_per_quarter
                     )
 
-                    # --- VELOCITY STRIPPING ---
                     final_melody_strings = [
                         t
                         for t in injected_melody_strings
@@ -270,42 +409,84 @@ class PianoArrangerTokenizer:
                         t for t in raw_literal_strings if not t.startswith("Velocity_")
                     ]
 
-                    melody_ids = []
-                    for tok in final_melody_strings:
-                        if tok in self.tokenizer.vocab:
-                            melody_ids.append(self.tokenizer.vocab[tok])
-                        else:
-                            print(f"  [WARNING] Dropping unknown token: {tok}")
-
-                    literal_ids = []
-                    for tok in final_literal_strings:
-                        if tok in self.tokenizer.vocab:
-                            literal_ids.append(self.tokenizer.vocab[tok])
-                        else:
-                            print(f"  [WARNING] Dropping unknown token: {tok}")
-
-                    out_melody = os.path.join(
-                        output_dir, f"{score_name}_MELODY_CHORDS.json"
-                    )
-                    out_literal = os.path.join(output_dir, f"{score_name}_LITERAL.json")
-
-                    with open(out_melody, "w") as f:
-                        json.dump(
-                            {"ids": melody_ids, "tokens": final_melody_strings}, f
+                    # --- CHUNKING BYPASS ---
+                    if use_chunking:
+                        melody_chunks = chunk_token_sequence(
+                            final_melody_strings, chunk_size, stride
                         )
-                    with open(out_literal, "w") as f:
-                        json.dump(
-                            {"ids": literal_ids, "tokens": final_literal_strings}, f
+                        literal_chunks = chunk_token_sequence(
+                            final_literal_strings, chunk_size, stride
                         )
+                    else:
+                        melody_chunks = [final_melody_strings]
+                        literal_chunks = [final_literal_strings]
+
+                    num_chunks = min(len(melody_chunks), len(literal_chunks))
+
+                    # --- STITCHING & SAVING ---
+                    for i in range(num_chunks):
+                        current_melody = melody_chunks[i]
+                        current_literal = literal_chunks[i]
+
+                        # Apply Control Token if provided
+                        if control_token and (
+                            not current_melody or current_melody[0] != control_token
+                        ):
+                            current_melody = [control_token] + current_melody
+
+                        # Apply Context Stitching
+                        if use_stitching:
+                            if i == 0:
+                                encoder_input_strings = ["[SEP]"] + current_melody
+                            else:
+                                previous_literal = literal_chunks[i - 1]
+                                encoder_input_strings = (
+                                    previous_literal + ["[SEP]"] + current_melody
+                                )
+                        else:
+                            encoder_input_strings = current_melody
+
+                        decoder_target_strings = current_literal
+
+                        # Convert to IDs
+                        melody_ids = [
+                            self.tokenizer.vocab.get(t, 0)
+                            for t in encoder_input_strings
+                        ]  # 0 fallback
+                        literal_ids = [
+                            self.tokenizer.vocab.get(t, 0)
+                            for t in decoder_target_strings
+                        ]
+
+                        # Save Numbered Chunks
+                        out_melody = os.path.join(
+                            output_dir, f"{score_name}_chunk{i:03d}_MELODY_CHORDS.json"
+                        )
+                        out_literal = os.path.join(
+                            output_dir, f"{score_name}_chunk{i:03d}_LITERAL.json"
+                        )
+
+                        with open(out_melody, "w") as f:
+                            json.dump(
+                                {"ids": melody_ids, "tokens": encoder_input_strings}, f
+                            )
+                        with open(out_literal, "w") as f:
+                            json.dump(
+                                {"ids": literal_ids, "tokens": decoder_target_strings},
+                                f,
+                            )
 
                     processed_count += 1
 
-                except AssertionError as ae:
-                    print(f"SKIPPING {score_name}: {ae}")
                 except Exception as e:
+                    import traceback
+
+                    traceback.print_exc()
                     print(f"Failed processing {score_name}: {e}")
 
-        print(f"[Core] Successfully processed {processed_count} songs in {input_dir}")
+        print(
+            f"[Core] Successfully processed {processed_count} songs into chunks from {input_dir} to {output_dir}"
+        )
 
     def decode_directory(self, input_dir, output_dir):
         """Decodes JSON token sequences back into MIDI and TSV."""
@@ -376,11 +557,22 @@ class PianoArrangerTokenizer:
                         beats_per_bar = 4.0
                         has_seen_bar = False
 
+                        # If [SEP] is present, slice the list so we ONLY decode the current melody!
+                        # Otherwise, the output MIDI will contain the previous literal overlapping the melody.
+                        working_tokens = seq.tokens
+                        if "[SEP]" in working_tokens:
+                            sep_idx = working_tokens.index("[SEP]")
+                            working_tokens = working_tokens[sep_idx + 1 :]
+
                         for token_str in seq.tokens:
                             # A. Extract Chords
                             if token_str.startswith("[CHORD_"):
                                 chord_name = token_str[7:-1]
                                 recovered_tsv_data.append((chord_name, current_quarter))
+                                continue
+
+                            # Bypass any other special bracket tokens ([SECTION_], etc.)
+                            if token_str.startswith("[") and token_str.endswith("]"):
                                 continue
 
                             # --- VELOCITY RESTORATION ---

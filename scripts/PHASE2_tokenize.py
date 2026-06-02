@@ -32,6 +32,15 @@ def run_phase2_tokenization():
     # 3. Process the Augmented target dataset
     print(f"\nProcessing Augmented Target Data from {TARGET_IN_DIR}...")
     core.process_directory(TARGET_IN_DIR, TARGET_OUT_DIR)
+    core.process_directory(
+        TARGET_IN_DIR,
+        TARGET_OUT_DIR,
+        chunk_size=8,
+        stride=2,  # Heavy overlap for augmentation
+        control_token="[SECTION_TARGET]",
+        use_stitching=True,
+        use_chunking=True,
+    )
 
     # Note: We do NOT need to save the config again, as Phase 1 already acts as the source of truth.
 

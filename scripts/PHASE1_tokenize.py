@@ -35,10 +35,24 @@ def run_phase1_tokenization():
 
     # 5. Process the Datasets
     print("\nProcessing Chord Dictionary...")
-    core.process_directory(DICT_IN_DIR, PHASE1_OUT_DIR)
+    core.process_directory(
+        DICT_IN_DIR,
+        PHASE1_OUT_DIR,
+        chunk_size=8,
+        stride=8,  # No overlap for Phase 1
+        use_chunking=False,
+        use_stitching=True,
+    )
 
     print("\nProcessing POP909 Dataset...")
-    core.process_directory(POP909_IN_DIR, PHASE1_OUT_DIR)
+    core.process_directory(
+        POP909_IN_DIR,
+        PHASE1_OUT_DIR,
+        chunk_size=8,
+        stride=8,  # No overlap for Phase 1
+        use_chunking=True,
+        use_stitching=True,
+    )
 
     print("\n--- Phase 1 Tokenization Complete ---")
 
