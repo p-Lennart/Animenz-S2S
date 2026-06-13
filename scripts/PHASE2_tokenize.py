@@ -24,7 +24,7 @@ def run_phase2_tokenization():
     print("--- Starting Phase 2 Tokenization ---")
 
     # 1. Initialize the Core object
-    core = PianoArrangerTokenizer()
+    core = PianoArrangerTokenizer(use_control_tokens=True)
 
     # 2. Inherit the EXACT state from Phase 1
     core.load_existing(CONFIG_PATH)
@@ -37,7 +37,6 @@ def run_phase2_tokenization():
         TARGET_OUT_DIR,
         chunk_size=8,
         stride=2,  # Heavy overlap for augmentation
-        control_token="[SECTION_TARGET]",
         use_stitching=True,
         use_chunking=True,
     )
