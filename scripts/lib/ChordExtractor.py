@@ -22,14 +22,14 @@ class ChordExtractor:
         if not self.stream:
             return
 
-        part_map, ref_part = stream_utils.map_parts(self.stream)
-        if not part_map and not ref_part:
+        part_map, bass_ref_part = stream_utils.map_parts(self.stream)
+        if not part_map and not bass_ref_part:
             return
 
         last_chord_str = None
         previous_window_notes = []
 
-        for m in ref_part.getElementsByClass("Measure"):
+        for m in bass_ref_part.getElementsByClass("Measure"):
             measure_start = m.offset
             measure_end = m.offset + m.duration.quarterLength
 

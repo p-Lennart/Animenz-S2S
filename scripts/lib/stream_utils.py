@@ -19,23 +19,29 @@ SORTED_BASS_TIERS.sort(key=lambda x: x[0], reverse=True)
 
 def map_parts(stream):
     """
-    Identifies the Tenor and Bass parts in a polyphonic stream.
-    Returns: (part_map, reference_part)
+    Identifies the Soprano, Alto, Tenor, and Bass parts in a polyphonic stream.
+    Returns: (part_map, bass_ref_part)
     """
     part_map = {}
     try:
         if isinstance(stream, music21.stream.Score):
             for p in stream.parts:
-                if p.id in ["T", "B"]:
+                if p.id in ["S", "A", "T", "B"]:
                     part_map[p.id] = p
+            # Fallback by index if IDs are missing
             if not part_map and len(stream.parts) >= 4:
+                part_map["S"] = stream.parts[0]
+                part_map["A"] = stream.parts[1]
                 part_map["T"] = stream.parts[2]
                 part_map["B"] = stream.parts[3]
         elif isinstance(stream, music21.stream.Part):
             part_map["B"] = stream
 
-        ref_part = part_map.get("B") or part_map.get("T") or stream.parts[0]
-        return part_map, ref_part
+        # Contextualized reference part for measure iteration (prioritizes lower voices)
+        bass_ref_part = part_map.get("B") or part_map.get("T") or stream.parts[0]
+
+        return part_map, bass_ref_part
+
     except Exception as e:
         print(f"[stream_utils] Error mapping parts: {e}")
         return {}, stream.parts[0] if hasattr(stream, "parts") else stream
