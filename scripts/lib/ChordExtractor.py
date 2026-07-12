@@ -1,7 +1,7 @@
 # VERSION = 1.10 (Fully Abstracted Stream Utils)
 import music21
 import copy
-import stream_utils
+import lib.stream_utils as stream_utils
 
 
 class ChordExtractor:

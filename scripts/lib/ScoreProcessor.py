@@ -4,7 +4,8 @@ import os
 import statistics
 from pathlib import Path
 from lib.MelodyReducer import MelodyReducer
-from lib.ChordExtractor import ChordExtractor  # Added ChordExtractor import
+from lib.ChordExtractor import ChordExtractor
+from lib.IntensityExtractor import IntensityExtractor
 
 
 class ScoreProcessor:
@@ -92,6 +93,17 @@ class ScoreProcessor:
                         # Write data rows
                         for timestamp, chord_name, offset in chord_events:
                             f.write(f"{timestamp}\t{chord_name}\t{offset}\n")
+
+                if self.DEBUG:
+                    print("Running Intensity Extractor...")
+                ie = IntensityExtractor(literal_midi)
+                if write_files and output_dir:
+                    intensity_path = os.path.join(
+                        output_dir, f"{self.score_name}_INTENSITY.tsv"
+                    )
+                    with open(intensity_path, "w", encoding="utf-8") as f:
+                        f.write(ie.to_tsv())
+
             except Exception as e:
                 import traceback
 
