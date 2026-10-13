@@ -6,7 +6,7 @@ from collections import defaultdict
 
 # --- SYSTEM CONSTANTS ---
 SYSTEM_TOKENS = {
-    "chunk_separator": "[SEP]",
+    "chunk_separator": "[SEP_CHUNK]",
     "control_intensities": [
         "[INTENSITY_LOWEST]",
         "[INTENSITY_LOW]",
@@ -75,18 +75,43 @@ def load_and_map_intensities(tsv_path, ticks_per_quarter):
     """Maps TSV integer intensities to their global token strings."""
     intensities_by_tick = defaultdict(list)
     with open(tsv_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()[1:]
-        for line in lines:
+        lines = f.readlines()
+        if len(lines) <= 1:
+            return intensities_by_tick
+
+        header_cols = [c.strip().lower() for c in lines[0].strip().split("\t")]
+        has_midi_offset_col = (
+            "midi_offset" in header_cols and "density_eps" in header_cols
+        )
+
+        for line in lines[1:]:
             parts = line.strip().split("\t")
             if len(parts) >= 3:
                 try:
-                    val = int(parts[1])
-                    val = max(0, 4)  # Clamp to [0, 4]
+                    if has_midi_offset_col:
+                        offset_idx = header_cols.index("midi_offset")
+                        density_idx = header_cols.index("density_eps")
+                        offset_q = float(parts[offset_idx])
+                        density = float(parts[density_idx])
+                        if density < 3.0:
+                            val = 0
+                        elif density < 6.0:
+                            val = 1
+                        elif density < 9.0:
+                            val = 2
+                        elif density < 12.0:
+                            val = 3
+                        else:
+                            val = 4
+                    else:
+                        val = int(round(float(parts[1])))
+                        val = max(0, min(val, 4))
+                        offset_q = float(parts[2])
+
                     token_str = SYSTEM_TOKENS["control_intensities"][val]
-                    offset_q = float(parts[2])
-                    tick = int(offset_q * ticks_per_quarter)
+                    tick = int(round(offset_q * ticks_per_quarter))
                     intensities_by_tick[tick].append(token_str)
-                except ValueError:
+                except (ValueError, IndexError):
                     pass
     return intensities_by_tick
 
@@ -524,9 +549,11 @@ class PianoArrangerTokenizer:
                         self.tokenizer.complete_sequence(seq)
 
                         working_tokens = seq.tokens
-                        if sep_tok in working_tokens:
-                            sep_idx = working_tokens.index(sep_tok)
-                            working_tokens = working_tokens[sep_idx + 1 :]
+                        for possible_sep in [sep_tok, "[SEP_CHUNK]", "[SEP]_None", "[SEP]"]:
+                            if possible_sep in working_tokens:
+                                sep_idx = working_tokens.index(possible_sep)
+                                working_tokens = working_tokens[sep_idx + 1 :]
+                                break
 
                         clean_tokens = []
                         recovered_tsv_data = []
