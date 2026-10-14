@@ -70,21 +70,43 @@ When generating sequentially, the model needs to know what it played in the prev
 
 A sliding window model doesn't know if it is arranging a Verse or a Chorus.
 
-- **The Fix:** We extract integer intensity maps from an `_INTENSITY.tsv` file \[0-4] and map them to `SYSTEM_TOKENS` (`[INTENSITY_LOWEST]` through `[INTENSITY_HIGHEST]`).
-    
-- These are injected into the Phase 2 sequence. The Transformer conditional bias quickly learns that these tokens dictate the density/virtuosity of the output, giving us manual macro-structure control at inference time.
+- **The Continuous Metrics:** [`IntensityExtractor.py`](scripts/lib/IntensityExtractor.py) extracts three measure-level metrics into `_INTENSITY.tsv`:
+  1. `Density_EPS`: Note-on events per second (activity/virtuosity).
+  2. `Bass_Median_Pitch`: Median pitch of extracted bassline (octave/register).
+  3. `Pitch_Difference`: Vertical span between overall median pitch and bass median pitch.
+- **The Discretization (Next Step):** These continuous dimensions are mathematically combined and quantized into discrete levels `[0-4]` mapped to `SYSTEM_TOKENS` (`[INTENSITY_LOWEST]` through `[INTENSITY_HIGHEST]`).
+- **The Generation Fix:** These tokens are injected into Phase 2 sequences immediately following `Position_0`. The Transformer conditional bias quickly learns that these tokens dictate the density/virtuosity of the output, giving us manual macro-structure control at inference time.
     
 
 ## 6. Directory Structure (Tens-Blocking)
 
 The pipeline relies on prefix grouping to prevent dataset contamination.
 
-- `00s`: Raw custom data.
+- `00s`: Raw custom data (`00_mscz_raw`, `01_xml_raw`, `02_uniques_staging`, `03_uniques`, `04_augmented`).
     
-- `10s`: POP909 raw/processed data.
+- `10s`: POP909 raw/processed data (`10_POP909_raw`, `11_POP909_processed`).
     
-- `20s`: Master Chord Vocab & the Dictionary Injection bridge.
+- `20s`: Master Chord Vocab & the Dictionary Injection bridge (`20_master_chord_vocab`).
     
-- `30s`: Phase 1 Tokenized JSONs (`tokenizer_config.json` is generated here).
+- `30s`: Phase 1 Tokenized JSONs (`30_phase1_tokens`, `tokenizer_config.json` generated here).
     
-- `40s`: Phase 2 Tokenized JSONs (Inherits config from 30s).
+- `40s`: Phase 2 Tokenized JSONs & Decoded diagnostics (`40_phase2_tokens`, `41_phase2_decoded`).
+
+## 7. Operational Quick Reference & Documentation Links
+
+For full technical specifications and codebase audit notes, see:
+- [pipeline_reference.md](pipeline_reference.md): Detailed stage-by-stage data contracts, execution walkthrough, token engine specifications, and the full audit register of flagged bugs and broken links.
+- [dataset_rules.md](dataset_rules.md): MusicXML parsing engine rules, dynamic exclusion state machines, run simplification, and changelog specifications.
+
+> **Environment Note:** Python scripts must be executed from the `scripts/` directory using the project conda environment (`animenzNN`):
+> ```powershell
+> conda activate animenzNN
+> cd scripts
+> python DATA00_process_pop909.py
+> python DATA01_ingest_xml.py
+> python DATA02_review_loop.py
+> python PHASE1_build_master_vocab.py
+> python PHASE1_tokenize.py
+> python PHASE2_tokenize.py
+> python PHASE2_decode.py
+> ```
