@@ -74,7 +74,7 @@ A sliding window model doesn't know if it is arranging a Verse or a Chorus.
   1. `Density_EPS`: Note-on events per second (activity/virtuosity).
   2. `Bass_Median_Pitch`: Median pitch of extracted bassline (octave/register).
   3. `Pitch_Difference`: Vertical span between overall median pitch and bass median pitch.
-- **The Discretization (Next Step):** These continuous dimensions are mathematically combined and quantized into discrete levels `[0-4]` mapped to `SYSTEM_TOKENS` (`[INTENSITY_LOWEST]` through `[INTENSITY_HIGHEST]`).
+- **The Discretization (Method A):** These continuous dimensions are mathematically combined using a hybrid formula (song-relative density percentile + absolute sub-bass depth below Middle C + keyboard spread) and quantized into discrete levels `[0-4]` (`[INTENSITY_LOWEST]` through `[INTENSITY_HIGHEST]`). See the full empirical analysis and benchmark in [intensity_analysis_report.md](intensity_analysis_report.md).
 - **The Generation Fix:** These tokens are injected into Phase 2 sequences immediately following `Position_0`. The Transformer conditional bias quickly learns that these tokens dictate the density/virtuosity of the output, giving us manual macro-structure control at inference time.
     
 
@@ -95,6 +95,7 @@ The pipeline relies on prefix grouping to prevent dataset contamination.
 ## 7. Operational Quick Reference & Documentation Links
 
 For full technical specifications and codebase audit notes, see:
+- [intensity_analysis_report.md](intensity_analysis_report.md): Complete empirical EDA across 15,233 measures, ground-truth calibration against hand-labeled targets, tempo/BPM artifact analysis, cross-song benchmarks, and the finalized discretization specification.
 - [pipeline_reference.md](pipeline_reference.md): Detailed stage-by-stage data contracts, execution walkthrough, token engine specifications, and the full audit register of flagged bugs and broken links.
 - [dataset_rules.md](dataset_rules.md): MusicXML parsing engine rules, dynamic exclusion state machines, run simplification, and changelog specifications.
 

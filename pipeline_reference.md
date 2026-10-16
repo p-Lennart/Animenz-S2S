@@ -268,16 +268,17 @@ The following issues were identified during the codebase walkthrough.
   - A human reviewer listens and visually inspects the draft in a DAW, manually corrects the melody line, and **deletes the other 3 tracks**. Deleting the 3 non-melody tracks is the intentional gating signal to `DATA02_review_loop.py` (`len(melody_score.tracks) == 1`) that the song is cleaned and approved for promotion.
   - The 99 files currently in `02_uniques_staging/` were reintroduced to retroactively extract intensity metrics across the catalog after `03_uniques` had already completed review, and are awaiting the intensity discretization step before being re-promoted or synced.
 
-#### 6. Intensity Discretization & Staging-to-Uniques Sync (Next Step)
-- **Location:** [`DATA02_review_loop.py` lines 206-216](scripts/DATA02_review_loop.py#L206-L216), [`IntensityExtractor.py`](scripts/lib/IntensityExtractor.py)
-- **Status:** **Active Development / Next Step**.
-- **Context:**
-  - `IntensityExtractor` currently computes 3 continuous physical metrics per measure:
-    1. `Density_EPS` (Note-on events per second: activity/density of texture).
-    2. `Bass_Median_Pitch` (Median pitch of extracted bassline: left-hand register).
-    3. `Pitch_Difference` (Distance between overall median and bass median: vertical span / textural fullness).
-  - **Pending Mathematical Step:** A formula / classifier must be developed to combine these 3 continuous dimensions into a single discrete intensity rating in range `[0-4]` (`[INTENSITY_LOWEST]` to `[INTENSITY_HIGHEST]`).
-  - Once discretized, `DATA02_review_loop.py` must be updated to copy the resulting intensity TSV into `03_uniques/` alongside `_MELODY.mid` and `_CHORDS.tsv`, or retroactively merge the intensity data directly into existing `03_uniques` folders.
+#### 6. Intensity Discretization & Staging-to-Uniques Sync
+- **Location:** [`DATA02_review_loop.py` lines 206-216](scripts/DATA02_review_loop.py#L206-L216), [`IntensityExtractor.py`](scripts/lib/IntensityExtractor.py), [`TokenizationCore.py`](scripts/lib/TokenizationCore.py)
+- **Status:** **Analysis Complete & Model Selected** (See full report: [intensity_analysis_report.md](intensity_analysis_report.md)).
+- **Selected Method:** **Method A (Hybrid Formula with Acoustic Floor/Ceiling Safeguards)**:
+  - Normalizes `Density_EPS` relative to song dynamic range (`density_song_pct`) to eliminate BPM/subdivision artifacts.
+  - Combines with absolute bass depth below Middle C ($\max(0, 60 - \text{Bass})$) and keyboard spread (`Pitch_Difference`).
+  - Gated by acoustic safeguards: requires $\text{Bass} \le 38.0$ for Level 4, caps treble register at Level 0, and caps missing bass at Level 0/1.
+  - Achieves **96.1% within-1 bar accuracy** across Leave-One-Song-Out Cross-Validation.
+- **Pending Implementation Steps:**
+  1. Embed `discretize_intensity_tsv()` into `TokenizationCore.py` and `IntensityExtractor.py`.
+  2. Implement sync script to populate discrete intensity TSVs into `03_uniques/`.
 
 #### 7. Script Path Sensitivity (CWD Dependency)
 - **Location:** All scripts in `scripts/*.py`
