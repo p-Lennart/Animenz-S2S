@@ -62,7 +62,7 @@ Every stage outputs into an isolated tens-prefixed directory to prevent data cro
 | `00_mscz_raw/` | Raw MuseScore source arrangements | 99 files | `*.mscz` |
 | `01_xml_raw/` | MusicXML export from MuseScore | 99 files | `*.musicxml` |
 | `02_uniques_staging/` | Automated extraction staging ground | 99 folders | `*_LITERAL.mid`, `*_MELODY_DRAFT.mid`, `*_CHORDS.tsv`, `*_INTENSITY.tsv`, `*_CHANGELOG.txt`, `*_META.yaml` |
-| `03_uniques/` | Promoted, verified single-track songs | 99 folders | `*_LITERAL.mid`, `*_MELODY.mid`, `*_CHORDS.tsv` |
+| `03_uniques/` | Promoted, verified single-track songs | 99 folders | `*_LITERAL.mid`, `*_MELODY.mid`, `*_CHORDS.tsv`, `*_INTENSITY.tsv`, `Intensity_Targets.tsv` (5 songs) |
 | `04_augmented/` | 12-key transposition & melody normalized | **0 items (Unimplemented)** | Planned: `*_LITERAL.mid`, `*_MELODY.mid`, `*_CHORDS.tsv`, `*_INTENSITY.tsv` |
 | `10_POP909_raw/` | Raw POP909 dataset | 911 folders (`001`-`909`) | `{id}.mid`, `beat_midi.txt` |
 | `11_POP909_processed/` | Quantized, aligned, stripped POP909 | 909 folders | `{id}_LITERAL.mid`, `{id}_MELODY.mid`, `{id}_CHORDS.tsv` |
@@ -130,9 +130,12 @@ Every stage outputs into an isolated tens-prefixed directory to prevent data cro
   - `DATA02_review_loop.py` enforces this gating rule: it requires `len(melody_score.tracks) == 1` and `find_all_overlaps(melody_track) == []` before promoting.
   - On pass, it flattens `literal_score` to a single track, copies the files to `03_uniques/`, and deletes the staging folder.
   - Provides `-r` / `--retroactive` flag to audit `03_uniques` for accidental note overlaps.
-- **Why 99 Songs Exist in Both `02_uniques_staging` and `03_uniques`:**
-  - The current 99 songs in `03_uniques` successfully completed the human review process *before* the intensity heuristic and extractor were created.
-  - The exact same songs were reintroduced into `02_uniques_staging` to retroactively generate continuous intensity analytics (`_INTENSITY.tsv`). Because they were re-ingested by `ScoreProcessor`, they currently retain all 4 tracks pending the completion of the intensity discretization step.
+- **Batch Reprocessing & Promotion Script:**
+  - Script: [`scripts/DATA01b_reprocess_chords_and_intensity.py`](scripts/DATA01b_reprocess_chords_and_intensity.py)
+  - Purpose: Reprocesses all 99 MusicXML files through `ScoreProcessor` with the updated v1.20 `ChordExtractor` safeguards and Method A Rich Schema `IntensityExtractor`.
+  - Promotes updated `*_CHORDS.tsv` and `*_INTENSITY.tsv` directly to `03_uniques/`.
+  - **Preservation Guarantee:** Implements an SHA/fingerprint lock ensuring all existing human-reviewed `*_LITERAL.mid` and `*_MELODY*.mid` files in `03_uniques/` remain 100% bit-for-bit intact.
+  - Also backs up all 5 hand-labeled `Intensity_Targets.tsv` calibration files to `tests/fixtures/intensity_targets/` (version-controlled) and into their respective song directories in `03_uniques/`.
 
 ---
 
