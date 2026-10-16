@@ -72,7 +72,15 @@ def load_dictionary_entry(tsv_path):
 
 
 def load_and_map_intensities(tsv_path, ticks_per_quarter):
-    """Maps TSV integer intensities to their global token strings."""
+    """
+    Maps TSV intensities to their global token strings.
+
+    Supports:
+      1. Rich Schema: Timestamp, MIDI_Offset, Intensity, Density_EPS, Bass_Median_Pitch, Pitch_Difference
+      2. Legacy Integer Schema: Timestamp, Intensity, Offset
+      3. Continuous Fallback: Timestamp, MIDI_Offset, Density_EPS, Bass_Median_Pitch, Pitch_Difference
+         (automatically discretized on-the-fly via Method A).
+    """
     intensities_by_tick = defaultdict(list)
     with open(tsv_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -80,39 +88,91 @@ def load_and_map_intensities(tsv_path, ticks_per_quarter):
             return intensities_by_tick
 
         header_cols = [c.strip().lower() for c in lines[0].strip().split("\t")]
-        has_midi_offset_col = (
-            "midi_offset" in header_cols and "density_eps" in header_cols
-        )
+        has_intensity_col = "intensity" in header_cols
+        has_continuous_cols = "density_eps" in header_cols and "midi_offset" in header_cols
 
-        for line in lines[1:]:
-            parts = line.strip().split("\t")
-            if len(parts) >= 3:
-                try:
-                    if has_midi_offset_col:
-                        offset_idx = header_cols.index("midi_offset")
-                        density_idx = header_cols.index("density_eps")
+        if has_intensity_col:
+            # Case 1 & 2: Pre-computed discrete intensity column present
+            intensity_idx = header_cols.index("intensity")
+            offset_idx = (
+                header_cols.index("midi_offset")
+                if "midi_offset" in header_cols
+                else (header_cols.index("offset") if "offset" in header_cols else 2)
+            )
+            for line in lines[1:]:
+                parts = line.strip().split("\t")
+                if len(parts) > max(intensity_idx, offset_idx):
+                    try:
+                        val = int(round(float(parts[intensity_idx])))
+                        val = max(0, min(val, 4))
                         offset_q = float(parts[offset_idx])
-                        density = float(parts[density_idx])
-                        if density < 3.0:
-                            val = 0
-                        elif density < 6.0:
-                            val = 1
-                        elif density < 9.0:
-                            val = 2
-                        elif density < 12.0:
-                            val = 3
-                        else:
-                            val = 4
-                    else:
+                        token_str = SYSTEM_TOKENS["control_intensities"][val]
+                        tick = int(round(offset_q * ticks_per_quarter))
+                        intensities_by_tick[tick].append(token_str)
+                    except (ValueError, IndexError):
+                        pass
+
+        elif has_continuous_cols:
+            # Case 3: Continuous metrics without pre-computed intensity -> Method A Fallback
+            records = []
+            offsets = []
+            offset_idx = header_cols.index("midi_offset")
+            for line in lines[1:]:
+                parts = line.strip().split("\t")
+                if len(parts) >= len(header_cols):
+                    try:
+                        rec = {header_cols[i]: parts[i] for i in range(len(header_cols))}
+                        off_q = float(parts[offset_idx])
+                        records.append(rec)
+                        offsets.append(off_q)
+                    except (ValueError, IndexError):
+                        pass
+
+            try:
+                from lib.IntensityExtractor import discretize_intensity_records
+            except ImportError:
+                try:
+                    from IntensityExtractor import discretize_intensity_records
+                except ImportError:
+                    discretize_intensity_records = None
+
+            if discretize_intensity_records is not None:
+                levels = discretize_intensity_records(records)
+            else:
+                dens_idx = header_cols.index("density_eps")
+                levels = []
+                for r in records:
+                    try:
+                        d = float(r.get("density_eps", 0.0))
+                    except (ValueError, TypeError):
+                        d = 0.0
+                    lvl = (
+                        0
+                        if d < 4.0
+                        else (1 if d < 8.0 else (2 if d < 12.0 else (3 if d < 16.0 else 4)))
+                    )
+                    levels.append(lvl)
+
+            for offset_q, val in zip(offsets, levels):
+                token_str = SYSTEM_TOKENS["control_intensities"][val]
+                tick = int(round(offset_q * ticks_per_quarter))
+                intensities_by_tick[tick].append(token_str)
+
+        else:
+            # Fallback for unheadered legacy files: parts[1]=intensity, parts[2]=offset
+            for line in lines[1:]:
+                parts = line.strip().split("\t")
+                if len(parts) >= 3:
+                    try:
                         val = int(round(float(parts[1])))
                         val = max(0, min(val, 4))
                         offset_q = float(parts[2])
+                        token_str = SYSTEM_TOKENS["control_intensities"][val]
+                        tick = int(round(offset_q * ticks_per_quarter))
+                        intensities_by_tick[tick].append(token_str)
+                    except (ValueError, IndexError):
+                        pass
 
-                    token_str = SYSTEM_TOKENS["control_intensities"][val]
-                    tick = int(round(offset_q * ticks_per_quarter))
-                    intensities_by_tick[tick].append(token_str)
-                except (ValueError, IndexError):
-                    pass
     return intensities_by_tick
 
 

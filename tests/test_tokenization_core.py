@@ -37,6 +37,10 @@ from lib.TokenizationCore import (
     load_dictionary_entry,
     load_and_map_intensities,
 )
+from lib.IntensityExtractor import (
+    discretize_intensity_records,
+    discretize_intensity_tsv,
+)
 
 
 class TestChordSanitization(unittest.TestCase):
@@ -317,6 +321,95 @@ class TestIntensityParsingAndClamping(unittest.TestCase):
         finally:
             if os.path.exists(tsv_path):
                 os.remove(tsv_path)
+
+    def test_rich_schema_intensity_parsing(self):
+        """Verifies parsing of Rich Schema TSV (Timestamp, MIDI_Offset, Intensity, Density_EPS, Bass, Diff)."""
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".tsv", encoding="utf-8") as tf:
+            tf.write("Timestamp\tMIDI_Offset\tIntensity\tDensity_EPS\tBass_Median_Pitch\tPitch_Difference\n")
+            tf.write("[00:00.000]\t0.0\t0\t2.5\tN/A\tN/A\n")
+            tf.write("[00:02.000]\t4.0\t1\t6.0\t52.0\t16.0\n")
+            tf.write("[00:04.000]\t8.0\t3\t16.0\t39.0\t28.0\n")
+            tf.write("[00:06.000]\t12.0\t4\t20.0\t32.0\t36.0\n")
+            tsv_path = tf.name
+
+        try:
+            tpq = 480
+            intensities = load_and_map_intensities(tsv_path, tpq)
+
+            self.assertEqual(intensities[0], [SYSTEM_TOKENS["control_intensities"][0]])
+            self.assertEqual(intensities[4 * tpq], [SYSTEM_TOKENS["control_intensities"][1]])
+            self.assertEqual(intensities[8 * tpq], [SYSTEM_TOKENS["control_intensities"][3]])
+            self.assertEqual(intensities[12 * tpq], [SYSTEM_TOKENS["control_intensities"][4]])
+        finally:
+            if os.path.exists(tsv_path):
+                os.remove(tsv_path)
+
+    def test_continuous_schema_fallback_discretization(self):
+        """Verifies continuous TSV without Intensity column triggers Method A on-the-fly."""
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".tsv", encoding="utf-8") as tf:
+            tf.write("Timestamp\tMIDI_Offset\tDensity_EPS\tBass_Median_Pitch\tPitch_Difference\n")
+            tf.write("[00:00.000]\t0.0\t2.0\tN/A\tN/A\n")
+            tf.write("[00:02.000]\t4.0\t6.0\t52.0\t14.0\n")
+            tf.write("[00:04.000]\t8.0\t11.0\t44.0\t22.0\n")
+            tf.write("[00:06.000]\t12.0\t16.0\t39.0\t28.0\n")
+            tf.write("[00:08.000]\t16.0\t22.0\t28.0\t42.0\n")
+            tsv_path = tf.name
+
+        try:
+            tpq = 480
+            intensities = load_and_map_intensities(tsv_path, tpq)
+
+            # Measure 0 (missing bass, low density) -> Level 0 [LOWEST]
+            self.assertEqual(intensities[0], [SYSTEM_TOKENS["control_intensities"][0]])
+            # Measure 4 (sub-bass 28.0, high density 22.0) -> Level 4 [HIGHEST]
+            self.assertEqual(intensities[16 * tpq], [SYSTEM_TOKENS["control_intensities"][4]])
+        finally:
+            if os.path.exists(tsv_path):
+                os.remove(tsv_path)
+
+
+class TestMethodADiscretization(unittest.TestCase):
+    """Unit tests verifying Method A discretization rules and safeguards."""
+
+    def test_acoustic_safeguards(self):
+        """Tests Level 4 sub-bass gating, treble caps, and missing-bass rules."""
+        records = [
+            # 1. Missing bass intro -> Level 0
+            {"density_eps": 2.0, "bass_median_pitch": "N/A", "pitch_diff": "N/A"},
+            # 2. Treble music-box -> Level 0 (bass >= 60, low density)
+            {"density_eps": 4.0, "bass_median_pitch": 64.0, "pitch_diff": 10.0},
+            # 3. Mid verse -> Level 1 or 2
+            {"density_eps": 8.0, "bass_median_pitch": 48.0, "pitch_diff": 18.0},
+            # 4. Energetic chorus without sub-bass -> Demoted from 4 to 3 (bass = 44.0 > 36.0)
+            {"density_eps": 24.0, "bass_median_pitch": 44.0, "pitch_diff": 22.0},
+            # 5. True peak climax -> Level 4 (sub-bass <= 36.0, wide spread, high density)
+            {"density_eps": 22.0, "bass_median_pitch": 28.0, "pitch_diff": 40.0},
+        ]
+
+        levels = discretize_intensity_records(records)
+        self.assertEqual(len(levels), 5)
+        self.assertEqual(levels[0], 0, f"Expected Level 0 for missing bass, got {levels[0]}")
+        self.assertEqual(levels[1], 0, f"Expected Level 0 for treble register, got {levels[1]}")
+        self.assertIn(levels[2], [1, 2], f"Expected Level 1 or 2 for verse, got {levels[2]}")
+        self.assertEqual(levels[3], 3, f"Expected demotion to Level 3 due to bass > 36.0, got {levels[3]}")
+        self.assertEqual(levels[4], 4, f"Expected Level 4 for sub-bass drop, got {levels[4]}")
+
+    def test_discretize_intensity_tsv_roundtrip(self):
+        """Verifies TSV string enrichment with Intensity column."""
+        raw_tsv = (
+            "Timestamp\tMIDI_Offset\tDensity_EPS\tBass_Median_Pitch\tPitch_Difference\n"
+            "[00:00.000]\t0.0\t1.5\tN/A\tN/A\n"
+            "[00:02.000]\t4.0\t18.0\t30.0\t36.0\n"
+        )
+        enriched = discretize_intensity_tsv(raw_tsv)
+        lines = enriched.strip().splitlines()
+        header = lines[0].split("\t")
+
+        self.assertEqual(header, ["Timestamp", "MIDI_Offset", "Intensity", "Density_EPS", "Bass_Median_Pitch", "Pitch_Difference"])
+        row0 = lines[1].split("\t")
+        self.assertEqual(row0[2], "0")
+        row1 = lines[2].split("\t")
+        self.assertEqual(row1[2], "4")
 
 
 class TestEndToEndTokenizationPipeline(unittest.TestCase):
