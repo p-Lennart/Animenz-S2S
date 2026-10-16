@@ -41,6 +41,8 @@ from lib.IntensityExtractor import (
     discretize_intensity_records,
     discretize_intensity_tsv,
 )
+from lib.ChordExtractor import ChordExtractor
+import music21
 
 
 class TestChordSanitization(unittest.TestCase):
@@ -79,6 +81,46 @@ class TestChordSanitization(unittest.TestCase):
             sanitize_chord("Chord Symbol Cannot Be Identified"), "[CHORD_NC]"
         )
         self.assertEqual(sanitize_chord("Cannot Be Identified"), "[CHORD_NC]")
+
+
+class TestChordExtractorSafeguards(unittest.TestCase):
+    """Verifies boundary safeguards and ephemeral pedal pruning in ChordExtractor."""
+
+    def test_ephemeral_scalar_pedal_pruning(self):
+        """Verifies rapid 16th-note scalar basslines do not produce micro-interval pedal spam."""
+        score = music21.stream.Score()
+        part_s = music21.stream.Part(id="S")
+        m_s = music21.stream.Measure(number=1)
+        m_s.append(music21.note.Note("C5", quarterLength=4.0))
+        part_s.append(m_s)
+
+        part_b = music21.stream.Part(id="B")
+        m_b = music21.stream.Measure(number=1)
+        m_b.append(music21.note.Note("C2", quarterLength=1.0))
+        # 16th-note scalar run: D2, E2, F2, G2
+        n1 = music21.note.Note("D2", quarterLength=0.25)
+        n1.offset = 1.0
+        n2 = music21.note.Note("E2", quarterLength=0.25)
+        n2.offset = 1.25
+        n3 = music21.note.Note("F2", quarterLength=0.25)
+        n3.offset = 1.5
+        n4 = music21.note.Note("G2", quarterLength=0.25)
+        n4.offset = 1.75
+        m_b.append([n1, n2, n3, n4])
+        m_b.append(music21.note.Note("G1", quarterLength=2.0))
+        part_b.append(m_b)
+
+        score.append([part_s, part_b])
+
+        ce = ChordExtractor(score, min_chord_dur=0.5)
+        events = ce.get_chord_events()
+
+        # Assert no micro-interval chord transitions (< 0.5 quarters)
+        for i in range(len(events) - 1):
+            dur = events[i + 1][2] - events[i][2]
+            self.assertGreaterEqual(
+                dur, 0.5, f"Chord change duration {dur} is below minimum 0.5 quarters."
+            )
 
 
 class TestChunkTokenSequence(unittest.TestCase):

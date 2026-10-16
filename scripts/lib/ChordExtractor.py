@@ -1,13 +1,14 @@
-# VERSION = 1.10 (Fully Abstracted Stream Utils)
+# VERSION = 1.20 (Boundary & Ephemeral Pedal Filtering)
 import music21
 import copy
 import lib.stream_utils as stream_utils
 
 
 class ChordExtractor:
-    def __init__(self, literal_stream, time_scale=0.5):
+    def __init__(self, literal_stream, time_scale=0.5, min_chord_dur=0.5):
         self.stream = literal_stream
         self.time_scale = time_scale
+        self.min_chord_dur = min_chord_dur
         self.extracted_data = []
         self._process_stream()
 
@@ -47,10 +48,10 @@ class ChordExtractor:
             for n_obj, offset in bass_candidate_notes:
                 if n_obj.pitch.nameWithOctave in bass_pitch_names:
                     if not bass_attacks:
-                        bass_attacks.append((offset, n_obj.pitch.pitchClass))
+                        bass_attacks.append((offset, n_obj.pitch.pitchClass, n_obj.pitch.ps))
                     else:
                         if abs(bass_attacks[-1][0] - offset) > 0.001:
-                            bass_attacks.append((offset, n_obj.pitch.pitchClass))
+                            bass_attacks.append((offset, n_obj.pitch.pitchClass, n_obj.pitch.ps))
 
             bass_attacks.sort(key=lambda x: x[0])
 
@@ -58,11 +59,18 @@ class ChordExtractor:
             if bass_attacks:
                 merged_boundaries.append(bass_attacks[0][0])
                 current_pc = bass_attacks[0][1]
+                last_off = bass_attacks[0][0]
+                last_ps = bass_attacks[0][2]
                 for i in range(1, len(bass_attacks)):
-                    off, pc = bass_attacks[i]
-                    if pc != current_pc:
+                    off, pc, ps = bass_attacks[i]
+                    dur_since_last = off - last_off
+                    is_sub_drop = (ps - last_ps) <= -5.0  # Significant downward drop into bass
+                    # Boundary safeguard: merge rapid subdivisions (< min_chord_dur) unless structural bass drop
+                    if pc != current_pc and (dur_since_last >= self.min_chord_dur or is_sub_drop):
                         merged_boundaries.append(off)
                         current_pc = pc
+                        last_off = off
+                        last_ps = ps
 
             merged_boundaries.append(measure_end)
 
@@ -102,6 +110,32 @@ class ChordExtractor:
                     last_chord_str = chord_symbol
 
                 previous_window_notes = window_notes
+
+        # Post-processing safeguard: filter out ephemeral pedal fallback chords (< min_chord_dur)
+        if self.min_chord_dur > 0 and self.extracted_data:
+            cleaned_events = []
+            n_events = len(self.extracted_data)
+            for i in range(n_events):
+                curr_time, curr_chord, curr_off = self.extracted_data[i]
+                next_off = (
+                    self.extracted_data[i + 1][2]
+                    if i + 1 < n_events
+                    else float("inf")
+                )
+                dur = next_off - curr_off
+
+                # If it's a transient pedal fallback chord lasting < min_chord_dur, prune it
+                if "pedal" in curr_chord and dur < self.min_chord_dur:
+                    continue
+                cleaned_events.append((curr_time, curr_chord, curr_off))
+
+            # Deduplicate any adjacent identical chords created by middle-pruning
+            deduped_events = []
+            for e in cleaned_events:
+                if not deduped_events or e[1] != deduped_events[-1][1]:
+                    deduped_events.append(e)
+
+            self.extracted_data = deduped_events
 
     def _get_quality_rank(self, symbol, pitch_count):
         if pitch_count == 1:

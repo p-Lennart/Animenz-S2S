@@ -110,9 +110,13 @@ Every stage outputs into an isolated tens-prefixed directory to prevent data cro
   - `{abbr}_LITERAL.mid` (Multi-part S/A/T/B score with tremolos baked).
   - `{abbr}_MELODY_DRAFT.mid` (SATB multi-part score with reduction and heuristics).
   - `{abbr}_CHORDS.tsv` (`Timestamp\tChord\tOffset`).
-  - `{abbr}_INTENSITY.tsv` (`Timestamp\tMIDI_Offset\tDensity_EPS\tBass_Median_Pitch\tPitch_Difference`).
+  - `{abbr}_INTENSITY.tsv` (`Timestamp\tMIDI_Offset\tIntensity\tDensity_EPS\tBass_Median_Pitch\tPitch_Difference`).
   - `{abbr}_CHANGELOG.txt` (Audit trail of heuristic triggers).
   - `{abbr}_META.yaml` (Local configuration override & `REPROCESS` flag).
+- **Key Mechanics (`ChordExtractor.py` v1.20):**
+  - **Bass-Anchored Quality-Ranked Iterative Slicing:** Extracts harmonic changes anchored on bassline pitch-class changes.
+  - **Boundary Duration Safeguard (`min_chord_dur=0.5q`):** Merges micro-interval boundary attacks separated by $< 0.5$ quarters (preventing 16th-note scalar runs from fragmenting the measure into single-note slices) unless accompanied by a structural bass drop ($\le -5$ semitones into deep bass).
+  - **Ephemeral Pedal Filter & Deduplication:** Suppresses low-rank `*pedal` fallback chords that evaporate in $< 0.5$ quarters (arpeggio/scale passing tones), ensuring legitimate sustained pedal points remain intact while eliminating transient noise.
 
 ---
 
@@ -331,20 +335,27 @@ python -m unittest tests/test_tokenization_core.py
    - Extended qualities, power chords, pedal chords, and slash chords (`F#/A#` -> `Gb/Bb`).
    - music21 `-` flat conversions (`B-` -> `Bb`).
    - Unidentifiable chord fallback (`[CHORD_NC]`).
-2. **`TestChunkTokenSequence`**:
+2. **`TestChordExtractorSafeguards`**:
+   - Verifies 16th-note scalar basslines do not produce micro-interval pedal spam.
+   - Asserts minimum chord duration threshold ($\Delta t \ge 0.5$ quarters).
+3. **`TestChunkTokenSequence`**:
    - Bar-by-bar sequence slicing.
    - Time signature and active chord propagation across 8-bar chunk boundaries.
    - Sliding window count with overlapping strides.
-3. **`TestCriticalBug1MidiTokSpecialTokens`** *(Targets Bug #1)*:
+4. **`TestCriticalBug1MidiTokSpecialTokens`** *(Targets Bug #1)*:
    - Asserts `SYSTEM_TOKENS["chunk_separator"]` exists in `core.tokenizer.vocab` without MidiTok `_None` mangling.
    - Asserts `[SEP]` does not resolve to fallback ID `0` (`[CHORD_A+/F]`).
    - Asserts all 5 `[INTENSITY_*]` tokens are present in vocabulary with valid IDs.
-4. **`TestCriticalBug2StitchedContextDecoding`** *(Targets Bug #2)*:
+5. **`TestCriticalBug2StitchedContextDecoding`** *(Targets Bug #2)*:
    - Asserts `decode_directory()` slices off previous literal context before decoding melody MIDI (verifying note count matches current chunk melody).
    - Asserts recovered TSV contains no spurious chords created by misinterpreting `[SEP]`.
-5. **`TestIntensityParsingAndClamping`** *(Targets Bug #3)*:
+6. **`TestIntensityParsingAndClamping`** *(Targets Bug #3)*:
    - Tests mathematical clamping across `[-1, 0, 1, 2, 3, 4, 5]`.
-   - Tests TSV parsing and mapping to `[INTENSITY_LOWEST]` .. `[INTENSITY_HIGHEST]`.
-6. **`TestEndToEndTokenizationPipeline`**:
+   - Tests parsing of legacy TSVs, Rich Schema TSVs, and continuous schema fallback.
+7. **`TestMethodADiscretization`**:
+   - Verifies sub-bass gating ($\le 36.0$) for Level 4 climaxes.
+   - Verifies treble register capping and missing-bass rules.
+   - Tests TSV enrichment roundtrip via `discretize_intensity_tsv`.
+8. **`TestEndToEndTokenizationPipeline`**:
    - Full synthetic roundtrip: Creates 1-bar melody + literal MIDI + TSV, tokenizes, verifies velocity stripping, decodes back to MIDI, and asserts note counts and pitches match.
 
