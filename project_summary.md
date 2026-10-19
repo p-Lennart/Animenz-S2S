@@ -1,4 +1,4 @@
-# Animenz Style Piano Arranger (Seq2Seq ML)
+# Animenz-S2S: Animenz Style Piano Arranger (Seq2Seq ML)
 
 ## 1. Project Overview
 
@@ -99,9 +99,10 @@ For full technical specifications and codebase audit notes, see:
 - [pipeline_reference.md](pipeline_reference.md): Detailed stage-by-stage data contracts, execution walkthrough, token engine specifications, and the full audit register of flagged bugs and broken links.
 - [dataset_rules.md](dataset_rules.md): MusicXML parsing engine rules, dynamic exclusion state machines, run simplification, and changelog specifications.
 
-> **Environment Note:** Python scripts must be executed from the `scripts/` directory using the project conda environment (`animenzNN`):
+> **Environment Note:** Set up the project conda environment using `environment.yml` (or install via `requirements.txt`):
 > ```powershell
-> conda activate animenzNN
+> conda env create -f environment.yml
+> conda activate animenz-s2s
 > cd scripts
 > python DATA00_process_pop909.py
 > python DATA01_ingest_xml.py

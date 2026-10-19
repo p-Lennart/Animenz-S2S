@@ -15,6 +15,7 @@
 /.mscbackup
 /test
 **/__pycache__/
+/tests/fixtures/
 
 /00_raw_mscz
 /01_raw_xml

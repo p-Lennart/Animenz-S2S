@@ -1,4 +1,4 @@
-# Animenz-LM Pipeline Reference Manual
+# Animenz-S2S Pipeline Reference Manual
 
 > **Status:** Work-In-Progress (Data Processing & Tokenization Pipeline)  
 > **Last Verified:** October 2026  
@@ -135,7 +135,7 @@ Every stage outputs into an isolated tens-prefixed directory to prevent data cro
   - Purpose: Reprocesses all 99 MusicXML files through `ScoreProcessor` with the updated v1.20 `ChordExtractor` safeguards and Method A Rich Schema `IntensityExtractor`.
   - Promotes updated `*_CHORDS.tsv` and `*_INTENSITY.tsv` directly to `03_uniques/`.
   - **Preservation Guarantee:** Implements an SHA/fingerprint lock ensuring all existing human-reviewed `*_LITERAL.mid` and `*_MELODY*.mid` files in `03_uniques/` remain 100% bit-for-bit intact.
-  - Also backs up all 5 hand-labeled `Intensity_Targets.tsv` calibration files to `tests/fixtures/intensity_targets/` (version-controlled) and into their respective song directories in `03_uniques/`.
+  - Also backs up all 5 hand-labeled `Intensity_Targets.tsv` calibration files to local `tests/fixtures/intensity_targets/` and into their respective song directories in `03_uniques/`.
 
 ---
 
@@ -328,7 +328,7 @@ A regression test suite is provided in [`tests/test_tokenization_core.py`](tests
 
 ### Running the Tests:
 ```powershell
-conda activate animenzNN
+conda activate animenz-s2s
 python -m unittest tests/test_tokenization_core.py
 ```
 

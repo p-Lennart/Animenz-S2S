@@ -10,11 +10,11 @@ setlocal EnableDelayedExpansion
 set "MS4_PATH=C:\Program Files\MuseScore 4\bin\MuseScore4.exe"
 
 :: Directory containing your .mscz files
-:: "." means the current folder where this script is located
-set "SOURCE_DIR=C:\Users\fiery\GitHub\Animenz-LM\00_mscz_raw"
+:: Defaults to the 00_mscz_raw folder relative to this script's directory
+set "SOURCE_DIR=%~dp000_mscz_raw"
 
 :: Directory where you want the .musicxml files to go
-set "DEST_DIR=C:\Users\fiery\GitHub\Animenz-LM\01_xml_raw"
+set "DEST_DIR=%~dp001_xml_raw"
 
 :: File extension for output (uncompressed is recommended)
 set "OUT_EXT=.musicxml"

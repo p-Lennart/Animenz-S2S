@@ -1,0 +1,21 @@
+name: animenz-s2s
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.11
+  - pip
+  - pyyaml>=6.0
+  - tqdm>=4.66
+  - numpy>=1.24
+  - pandas>=2.0
+  - matplotlib>=3.8
+  - pip:
+      - music21>=9.1.0
+      - symusic>=0.6.0
+      - miditok>=3.0.6
+      - mido>=1.3.0
+      - torch>=2.2.0
+      - transformers>=4.40.0
+      - datasets>=2.18.0
+      - accelerate>=0.28.0

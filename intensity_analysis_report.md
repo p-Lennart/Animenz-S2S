@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-To condition the Animenz-LM sequence-to-sequence model on musical dynamics and density, continuous acoustic metrics extracted by `IntensityExtractor.py` must be discretized into five categorical control tokens: `[INTENSITY_LOWEST]`, `[INTENSITY_LOW]`, `[INTENSITY_MEDIUM]`, `[INTENSITY_HIGH]`, and `[INTENSITY_HIGHEST]` (levels `0` to `4`).
+To condition the Animenz-S2S sequence-to-sequence model on musical dynamics and density, continuous acoustic metrics extracted by `IntensityExtractor.py` must be discretized into five categorical control tokens: `[INTENSITY_LOWEST]`, `[INTENSITY_LOW]`, `[INTENSITY_MEDIUM]`, `[INTENSITY_HIGH]`, and `[INTENSITY_HIGHEST]` (levels `0` to `4`).
 
 This report details:
 1. **Dataset-wide EDA:** A complete survey across all 99 unique Animenz arrangements in `02_uniques_staging/` (15,233 measures).

@@ -1,4 +1,4 @@
-# Animenz-LM Dataset Generation Rules (Technical Specification v34.0)
+# Animenz-S2S Dataset Generation Rules (Technical Specification v34.0)
 
 ## I. Philosophy & Pipeline Overview
 This pipeline transforms raw MusicXML (Piano Grand Staff) into two parallel MIDI representations for training a Language Model. The core challenge is dealing with the "Messy Reality" of engraved scores (visuals) vs. the "Musical Truth" (sound).
